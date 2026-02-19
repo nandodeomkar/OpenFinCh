@@ -1,15 +1,16 @@
-__pycache__/*
-yfinance/__pycache__/*
-dist
-yfinance.egg-info
+__pycache__/
 *.pyc
-.coverage
+*.pyo
+dist/
+build/
+*.egg-info/
+
+# Debug HTML output
+*.html
+
+# IDE
 .idea/
 .vscode/
-build/
-*.html
-*.css
-test.ipynb
 
 # Environments
 .env
@@ -18,9 +19,10 @@ env/
 venv/
 ENV/
 
-# Documentation
-/doc/build/
-/doc/_build/
-/doc/source/reference/api
-!yfinance.css
-!/doc/source/development/assets/branches.png
+# Testing
+.coverage
+test.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
