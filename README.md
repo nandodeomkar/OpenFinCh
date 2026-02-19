@@ -1,15 +1,15 @@
 # OpenFinCh - Open Financial Charts
 
-Interactive stock charting application with candlestick charts, drawing tools, technical indicators, and bar replay.
+Interactive stock charting application with candlestick charts, technical indicators, and switchable intervals.
 
 ## Features
 
 - Candlestick, line, and area chart types
-- Drawing tools: trend lines, rays, channels, horizontal/vertical lines, and more
-- Bar replay with adjustable speed
+- Toggleable intervals (1H, 4H, 1D) directly on the chart
+- Editable ticker symbol — change stocks without restarting
 - Volume indicator with separate sub-pane
 - Dark theme with amber accents
-- Persistent drawings via localStorage
+- Local HTTP server — no external services needed
 
 ## Installation
 
@@ -20,17 +20,19 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python -m openfinch.stock_chart
+python -m openfinch
 ```
 
-This opens a dialog to enter a ticker symbol, date range, and interval, then displays an interactive chart in your browser.
+This starts a local server at `http://127.0.0.1:8765` and opens the chart in your browser. Click on the ticker symbol in the header to change stocks.
 
 ## Project Structure
 
 ```
-openfinch/       - Main application package
-indicators/      - Technical indicator implementations
-tests/           - Debug and test scripts
+openfinch/           - Main application package
+  stock_chart.py     - HTML/CSS/JS chart page generator
+  server.py          - Local HTTP server
+  intervals/         - Interval definitions and data fetching
+indicators/          - Technical indicator implementations
 ```
 
 ## Requirements
@@ -38,7 +40,6 @@ tests/           - Debug and test scripts
 - Python 3.8+
 - yfinance
 - pandas
-- tkinter (included with Python)
 
 ## License
 

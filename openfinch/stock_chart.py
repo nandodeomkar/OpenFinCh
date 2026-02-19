@@ -1,264 +1,96 @@
-import sys
-import os
-import json
-import tempfile
-import webbrowser
-import tkinter as tk
-from tkinter import ttk, messagebox
-from datetime import date
+"""HTML chart page generator for OpenFinCh.
 
-import pandas as pd
-import yfinance as yf
+This module only generates the HTML/CSS/JS for the chart page.
+Data is fetched dynamically via AJAX from the local server.
+"""
+
+from openfinch.intervals import get_interval_buttons
 
 
-def get_user_input():
-    """Show a GUI dialog to collect ticker, date range, and interval."""
-    result = {}
+def build_chart_html(default_symbol: str) -> str:
+    """Generate the chart HTML page with an editable ticker and interval toggles."""
 
-    def on_submit():
-        symbol = symbol_var.get().strip().upper()
-        start = start_var.get().strip()
-        end = end_var.get().strip()
-        interval = interval_var.get().strip()
-
-        if not symbol:
-            messagebox.showerror("Error", "Ticker symbol is required.")
-            return
-        if not start:
-            messagebox.showerror("Error", "Start date is required.")
-            return
-        if not end:
-            messagebox.showerror("Error", "End date is required.")
-            return
-
-        result["symbol"] = symbol
-        result["start"] = start
-        result["end"] = end
-        result["interval"] = interval
-        root.destroy()
-
-    root = tk.Tk()
-    root.title("Stock Chart")
-    root.resizable(False, False)
-    root.configure(bg="#0a0a0f")
-
-    style = ttk.Style(root)
-    style.theme_use("clam")
-    style.configure("TLabel", background="#0a0a0f", foreground="#e0e0e0", font=("Segoe UI", 10))
-    style.configure("TEntry", fieldbackground="#1a1a24", foreground="#e0e0e0", font=("Segoe UI", 10))
-    style.configure("TButton", background="#f0b90b", foreground="#0a0a0f", font=("Segoe UI", 10, "bold"))
-    style.map("TButton", background=[("active", "#d4a20a")])
-    style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"), foreground="#f0b90b")
-    style.configure("Info.TLabel", foreground="#787b86", font=("Segoe UI", 8))
-    style.configure("TCombobox", fieldbackground="#1a1a24", foreground="#e0e0e0", font=("Segoe UI", 10))
-    style.map("TCombobox", fieldbackground=[("readonly", "#1a1a24")])
-
-    frame = ttk.Frame(root, padding=20)
-    frame.configure(style="TFrame")
-    style.configure("TFrame", background="#0a0a0f")
-    frame.grid()
-
-    ttk.Label(frame, text="Stock Chart", style="Header.TLabel").grid(
-        row=0, column=0, columnspan=2, pady=(0, 15)
+    buttons = get_interval_buttons()
+    interval_options_html = "\n      ".join(
+        f'<option value="{b["key"]}">{b["label"]}</option>'
+        for b in buttons
     )
-
-    symbol_var = tk.StringVar(value="AAPL")
-    start_var = tk.StringVar(value="2025-01-01")
-    end_var = tk.StringVar(value=str(date.today()))
-    interval_var = tk.StringVar(value="1h")
-
-    text_labels = ["Ticker Symbol", "Start Date (YYYY-MM-DD)", "End Date (YYYY-MM-DD)"]
-    text_vars = [symbol_var, start_var, end_var]
-
-    for i, (label, var) in enumerate(zip(text_labels, text_vars)):
-        ttk.Label(frame, text=label).grid(row=i + 1, column=0, sticky="w", pady=4, padx=(0, 10))
-        entry = ttk.Entry(frame, textvariable=var, width=25)
-        entry.grid(row=i + 1, column=1, pady=4)
-        if i == 0:
-            entry.focus_set()
-
-    row_interval = len(text_labels) + 1
-    ttk.Label(frame, text="Interval").grid(row=row_interval, column=0, sticky="w", pady=4, padx=(0, 10))
-    interval_combo = ttk.Combobox(
-        frame, textvariable=interval_var, values=["1h", "4h", "1d"],
-        state="readonly", width=22
-    )
-    interval_combo.grid(row=row_interval, column=1, pady=4)
-
-    ttk.Label(
-        frame,
-        text="1h/4h: max ~2 yrs lookback  |  1d: unlimited",
-        style="Info.TLabel",
-    ).grid(row=row_interval + 1, column=0, columnspan=2, pady=(0, 4))
-
-    submit_btn = ttk.Button(frame, text="Show Chart", command=on_submit)
-    submit_btn.grid(row=row_interval + 2, column=0, columnspan=2, pady=(15, 0))
-
-    root.bind("<Return>", lambda e: on_submit())
-
-    # Center on screen
-    root.update_idletasks()
-    w, h = root.winfo_width(), root.winfo_height()
-    x = (root.winfo_screenwidth() - w) // 2
-    y = (root.winfo_screenheight() - h) // 2
-    root.geometry(f"+{x}+{y}")
-
-    root.mainloop()
-    return result
-
-
-def fetch_data(symbol, start, end, interval):
-    """Download OHLCV data via yfinance; resample for 4h."""
-    ticker = yf.Ticker(symbol)
-
-    if interval == "4h":
-        df = ticker.history(start=start, end=end, interval="1h")
-        if df.empty:
-            return df
-        df = df.resample("4h").agg({
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-            "Volume": "sum",
-        }).dropna()
-    else:
-        df = ticker.history(start=start, end=end, interval=interval)
-
-    return df
-
-
-def build_chart_html(symbol, candle_data, volume_data, is_intraday):
-    """Generate an HTML page with a Lightweight Chart, bar-replay controls, and amber/dark theme."""
-    candles_json = json.dumps(candle_data)
-    volume_json = json.dumps(volume_data)
-    time_visible = "true" if is_intraday else "false"
+    default_interval = buttons[0]["key"] if buttons else "1h"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>{symbol} — Stock Chart</title>
+<title>{default_symbol} — OpenFinCh</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   html, body {{ height: 100%; overflow: hidden; }}
   body {{ background: #0a0a0f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; }}
   a[href*="tradingview"] {{ display: none !important; }}
+
   #header {{
     display: flex; align-items: center; gap: 12px;
     padding: 10px 16px; background: #111118; border-bottom: 1px solid #1e1e28;
   }}
-  #header .symbol {{ color: #e0e0e0; font-size: 18px; font-weight: 700; }}
+
+  #ticker-input {{
+    background: transparent; border: 1px solid transparent; border-radius: 4px;
+    color: #e0e0e0; font-size: 18px; font-weight: 700; width: 100px;
+    padding: 2px 6px; font-family: inherit; outline: none;
+    transition: border-color 0.2s, background 0.2s;
+  }}
+  #ticker-input:hover {{ border-color: #2a2a36; }}
+  #ticker-input:focus {{ border-color: #f0b90b; background: #1a1a24; }}
+
   #header .ohlc {{ display: flex; gap: 14px; font-size: 13px; }}
   #header .ohlc span {{ color: #787b86; }}
   #header .ohlc .val {{ color: #e0e0e0; font-weight: 500; }}
   #header .ohlc .up {{ color: #26a69a; }}
   #header .ohlc .down {{ color: #ef5350; }}
 
-  /* Replay controls */
-  #controls {{
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; background: #111118; border-bottom: 1px solid #1e1e28;
-    flex-wrap: wrap;
-  }}
-  #controls button {{
-    background: #1a1a24; color: #e0e0e0; border: 1px solid #2a2a36;
-    border-radius: 4px; padding: 5px 12px; cursor: pointer;
-    font-size: 13px; font-family: inherit; transition: background 0.15s;
-  }}
-  #controls button:hover {{ background: #28283a; }}
-  #controls button.active {{ background: #f0b90b; color: #0a0a0f; border-color: #f0b90b; }}
-  #controls .sep {{ width: 1px; height: 22px; background: #1e1e28; }}
-  #controls .label {{ color: #787b86; font-size: 12px; }}
-  #controls .counter {{ color: #e0e0e0; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 80px; }}
-  #speed-slider {{
-    -webkit-appearance: none; appearance: none; width: 100px; height: 4px;
-    background: #2a2a36; border-radius: 2px; outline: none;
-  }}
-  #speed-slider::-webkit-slider-thumb {{
-    -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
-    background: #f0b90b; border-radius: 50%; cursor: pointer;
-  }}
-  #speed-slider::-moz-range-thumb {{
-    width: 14px; height: 14px; background: #f0b90b; border-radius: 50%;
-    cursor: pointer; border: none;
-  }}
-
-  #chart-type {{
+  #interval-select {{
     background: #1a1a24; color: #e0e0e0; border: 1px solid #2a2a36;
     border-radius: 4px; padding: 4px 8px; font-size: 13px;
     font-family: inherit; cursor: pointer; outline: none;
   }}
+  #interval-select option {{ background: #1a1a24; color: #e0e0e0; }}
+
+  .custom-interval {{
+    display: none; align-items: center; gap: 4px;
+  }}
+  .custom-interval.visible {{ display: flex; }}
+  #custom-value {{
+    background: #1a1a24; color: #e0e0e0; border: 1px solid #2a2a36;
+    border-radius: 4px; padding: 4px 6px; font-size: 13px;
+    font-family: inherit; width: 48px; text-align: center; outline: none;
+  }}
+  #custom-value:focus {{ border-color: #f0b90b; }}
+  #custom-unit {{
+    background: #1a1a24; color: #e0e0e0; border: 1px solid #2a2a36;
+    border-radius: 4px; padding: 4px 6px; font-size: 13px;
+    font-family: inherit; cursor: pointer; outline: none;
+  }}
+  #custom-unit option {{ background: #1a1a24; color: #e0e0e0; }}
+  #custom-apply {{
+    background: #f0b90b; color: #0a0a0f; border: none;
+    border-radius: 4px; padding: 4px 8px; font-size: 13px;
+    font-weight: 600; cursor: pointer; font-family: inherit;
+  }}
+  #custom-apply:hover {{ background: #d4a30a; }}
+
+  #chart-type {{
+    background: #1a1a24; color: #e0e0e0; border: 1px solid #2a2a36;
+    border-radius: 4px; padding: 4px 8px; font-size: 13px;
+    font-family: inherit; cursor: pointer; outline: none; margin-left: auto;
+  }}
   #chart-type option {{ background: #1a1a24; color: #e0e0e0; }}
 
-  /* Replay toggle */
-  #btn-replay-toggle {{
-    margin-left: auto; background: #1a1a24; color: #787b86;
-    border: 1px solid #2a2a36; border-radius: 4px; padding: 4px 10px;
-    cursor: pointer; font-size: 12px; font-family: inherit;
-    transition: color 0.15s, background 0.15s; white-space: nowrap;
-  }}
-  #btn-replay-toggle:hover {{ color: #e0e0e0; background: #28283a; }}
-  #btn-replay-toggle.open {{ color: #f0b90b; border-color: rgba(240,185,11,0.4); }}
-
-  /* Drawing toolbar + chart layout */
-  #chart-area {{
-    flex: 1; min-height: 0; display: flex;
-  }}
-  #draw-toolbar {{
-    width: 72px; background: #111118; border-right: 1px solid #1e1e28;
-    display: flex; flex-direction: column; align-items: center;
-    padding: 4px 0; gap: 1px; overflow-y: auto; flex-shrink: 0;
-    user-select: none; transition: width 0.2s, padding 0.2s;
-  }}
-  #draw-toolbar.collapsed {{ width: 0; padding: 0; overflow: hidden; border-right: none; }}
-  #sidebar-toggle {{
-    position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-    z-index: 20; width: 16px; height: 48px; background: #1a1a24;
-    border: 1px solid #2a2a36; border-left: none; border-radius: 0 6px 6px 0;
-    color: #787b86; cursor: pointer; display: flex; align-items: center;
-    justify-content: center; font-size: 10px; transition: background 0.15s;
-  }}
-  #sidebar-toggle:hover {{ background: #28283a; color: #e0e0e0; }}
-  .tool-group-header {{
-    font-size: 8px; color: #555; text-transform: uppercase;
-    letter-spacing: 0.5px; padding: 6px 0 2px; width: 100%;
-    text-align: center; cursor: pointer; transition: color 0.15s;
-  }}
-  .tool-group-header:hover {{ color: #888; }}
-  .tool-group-header .arrow {{ font-size: 6px; margin-left: 2px; }}
-  .tool-group-items {{ display: flex; flex-direction: column; align-items: center; gap: 1px; width: 100%; }}
-  .tool-group-items.collapsed-group {{ display: none; }}
-  #draw-toolbar button {{
-    width: 66px; height: 44px; background: none; border: none;
-    border-radius: 4px; cursor: pointer; color: #555;
-    font-size: 13px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 3px;
-    transition: background 0.1s, color 0.1s; position: relative;
-  }}
-  #draw-toolbar button:hover {{ background: #1a1a24; color: #ccc; }}
-  #draw-toolbar button.tool-active {{
-    background: #1e1e2c; color: #f0b90b;
-    outline: 1px solid rgba(240,185,11,0.3); outline-offset: -2px;
-  }}
-  #draw-toolbar .tool-label {{
-    font-size: 8px; color: inherit; line-height: 1;
-    white-space: nowrap; pointer-events: none;
-  }}
+  #chart-area {{ flex: 1; min-height: 0; display: flex; }}
   #charts-container {{
     flex: 1; display: flex; flex-direction: column; min-width: 0;
   }}
-  .chart-pane {{
-    position: relative; min-height: 0;
-  }}
-  .chart-pane .pane-chart {{
-    position: absolute; inset: 0; z-index: 0;
-  }}
-  .chart-pane .pane-svg {{
-    position: absolute; top: 0; left: 0;
-    pointer-events: none; overflow: visible; z-index: 5;
-  }}
-  .chart-pane .pane-svg.drawing-mode {{ pointer-events: all; cursor: crosshair; z-index: 10; }}
+  .chart-pane {{ position: relative; min-height: 0; }}
+  .chart-pane .pane-chart {{ position: absolute; inset: 0; z-index: 0; }}
   .pane-divider {{
     height: 4px; background: #1e1e28; cursor: row-resize;
     flex-shrink: 0; position: relative; z-index: 15;
@@ -270,7 +102,6 @@ def build_chart_html(symbol, candle_data, volume_data, is_intraday):
     text-transform: uppercase; letter-spacing: 0.5px;
   }}
 
-  /* Indicators panel */
   #btn-indicators-toggle {{
     background: #1a1a24; color: #787b86;
     border: 1px solid #2a2a36; border-radius: 4px; padding: 4px 10px;
@@ -282,221 +113,129 @@ def build_chart_html(symbol, candle_data, volume_data, is_intraday):
   #indicators-panel {{
     display: none; padding: 8px 16px; background: #111118;
     border-bottom: 1px solid #1e1e28;
-    gap: 18px; align-items: center; flex-wrap: wrap;
+    gap: 12px; align-items: center; flex-wrap: wrap;
   }}
-  #indicators-panel label {{
-    color: #c8c8d0; font-size: 13px; cursor: pointer;
-    display: flex; align-items: center; gap: 6px;
-    transition: color 0.15s;
+  #indicator-select {{
+    background: #1a1a24; color: #e0e0e0; border: 1px solid #2a2a36;
+    border-radius: 4px; padding: 4px 8px; font-size: 13px;
+    font-family: inherit; cursor: pointer; outline: none;
   }}
-  #indicators-panel label:hover {{ color: #e0e0e0; }}
-  #indicators-panel input[type="checkbox"] {{
-    accent-color: #2962ff; width: 14px; height: 14px; cursor: pointer;
+  #indicator-select option {{ background: #1a1a24; color: #e0e0e0; }}
+  .active-indicator {{
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #1a1a24; border: 1px solid #2a2a36; border-radius: 4px;
+    padding: 4px 8px; font-size: 12px; color: #c8c8d0;
   }}
-  .ind-legend {{
-    font-size: 13px; color: #787b86;
+  .active-indicator input[type="number"], .active-indicator input[type="text"] {{
+    background: #0a0a0f; color: #e0e0e0; border: 1px solid #2a2a36;
+    border-radius: 3px; padding: 2px 4px; width: 42px; font-size: 12px;
+    font-family: inherit; text-align: center; outline: none;
   }}
-  .ind-legend .ind-val {{
-    color: #5b9cf6; font-weight: 500;
+  .active-indicator input[type="number"]:focus, .active-indicator input[type="text"]:focus {{ border-color: #f0b90b; }}
+  .active-indicator .swatch {{
+    width: 10px; height: 10px; border-radius: 2px; display: inline-block;
   }}
+  .active-indicator .remove-ind {{
+    background: none; border: none; color: #787b86; cursor: pointer;
+    font-size: 14px; padding: 0 2px; line-height: 1;
+  }}
+  .active-indicator .remove-ind:hover {{ color: #ef5350; }}
+
+  /* Loading overlay */
+  #loading {{
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(10,10,15,0.85); align-items: center; justify-content: center;
+  }}
+  #loading.active {{ display: flex; }}
+  .spinner {{
+    width: 36px; height: 36px; border: 3px solid #2a2a36;
+    border-top-color: #f0b90b; border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+
+  /* Error toast */
+  #toast {{
+    display: none; position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    z-index: 200; background: #ef5350; color: #fff; padding: 8px 20px;
+    border-radius: 6px; font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }}
+  #toast.show {{ display: block; }}
 </style>
 </head>
 <body>
+
+<div id="loading"><div class="spinner"></div></div>
+<div id="toast"></div>
+
 <div id="header">
-  <div class="symbol">{symbol}</div>
+  <input id="ticker-input" type="text" value="{default_symbol}" spellcheck="false" autocomplete="off">
+  <select id="interval-select">
+    {interval_options_html}
+    <option value="custom">Custom…</option>
+  </select>
+  <div class="custom-interval" id="custom-interval-group">
+    <input id="custom-value" type="number" min="1" value="7" placeholder="#">
+    <select id="custom-unit">
+      <option value="min">min</option>
+      <option value="hours">hours</option>
+      <option value="days">days</option>
+      <option value="weeks">weeks</option>
+      <option value="months">months</option>
+    </select>
+    <button id="custom-apply">&#9654;</button>
+  </div>
   <div class="ohlc" id="legend">
-    <span>O <span class="val" id="lo">—</span></span>
-    <span>H <span class="val" id="lh">—</span></span>
-    <span>L <span class="val" id="ll">—</span></span>
-    <span>C <span class="val" id="lc">—</span></span>
-    <span id="vol-legend">Vol <span class="val" id="lv">—</span></span>
+    <span>O <span class="val" id="lo">&mdash;</span></span>
+    <span>H <span class="val" id="lh">&mdash;</span></span>
+    <span>L <span class="val" id="ll">&mdash;</span></span>
+    <span>C <span class="val" id="lc">&mdash;</span></span>
+    <span id="vol-legend">Vol <span class="val" id="lv">&mdash;</span></span>
   </div>
   <button id="btn-indicators-toggle">&#128202; Indicators &#9660;</button>
-  <button id="btn-replay-toggle">&#9654; Replay &#9660;</button>
-</div>
-<div id="indicators-panel">
-  <label><input type="checkbox" id="ind-volume" checked> Volume</label>
-</div>
-<div id="controls" style="display:none">
-  <button id="btn-back" title="Step Back (Left Arrow)">&#9198; Back</button>
-  <button id="btn-play" title="Play / Pause (Space)">&#9654; Play</button>
-  <button id="btn-fwd" title="Step Forward (Right Arrow)">&#9197; Forward</button>
-  <div class="sep"></div>
-  <span class="label">Speed</span>
-  <input type="range" id="speed-slider" min="1" max="100" value="50">
-  <div class="sep"></div>
-  <span class="counter" id="counter">— / —</span>
-  <div class="sep"></div>
-  <button id="btn-reset" title="Reset to first candle">&#8617; Reset</button>
-  <button id="btn-all" title="Show all candles">Show All</button>
-  <div class="sep"></div>
-  <span class="label">Type</span>
   <select id="chart-type">
     <option value="candles" selected>Candles</option>
     <option value="line">Line</option>
     <option value="area">Area</option>
   </select>
 </div>
+<div id="indicators-panel">
+  <select id="indicator-select">
+    <option value="" selected disabled>+ Add indicator…</option>
+    <option value="volume">Volume</option>
+    <option value="sma">SMA (Simple Moving Average)</option>
+    <option value="ema">EMA (Exponential Moving Average)</option>
+    <option value="atr">ATR (Average True Range)</option>
+    <option value="macd">MACD (Moving Average Convergence Divergence)</option>
+    <option value="bb">Bollinger Bands</option>
+    <option value="adx">ADX (Average Directional Index)</option>
+    <option value="aroon">Aroon</option>
+    <option value="aroon_osc">Aroon Oscillator</option>
+  </select>
+  <div id="active-indicators"></div>
+</div>
 
 <div id="chart-area">
-  <div id="draw-toolbar">
-    <button data-tool="cursor" class="tool-active">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-        <path d="M2 2l10 5-5 1-2 5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
-      </svg>
-      <span class="tool-label">Cursor</span>
-    </button>
-
-    <div class="tool-group-header" id="lines-header">lines <span class="arrow">&#9660;</span></div>
-    <div class="tool-group-items" id="lines-group">
-      <button data-tool="trendline">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="2" y1="12" x2="12" y2="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <circle cx="2" cy="12" r="1.5" fill="currentColor"/>
-          <circle cx="12" cy="2" r="1.5" fill="currentColor"/>
-        </svg>
-        <span class="tool-label">Trend</span>
-      </button>
-
-      <button data-tool="ray">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="2" y1="12" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <circle cx="2" cy="12" r="1.5" fill="currentColor"/>
-          <polygon points="12,2 10,6 8,4" fill="currentColor"/>
-        </svg>
-        <span class="tool-label">Ray</span>
-      </button>
-
-      <button data-tool="extended">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="3" y1="11" x2="11" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <polygon points="13,1 11,5 9,3" fill="currentColor"/>
-          <polygon points="1,13 5,11 3,9" fill="currentColor"/>
-        </svg>
-        <span class="tool-label">Extended</span>
-      </button>
-
-      <button data-tool="hline">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-        <span class="tool-label">H-Line</span>
-      </button>
-
-      <button data-tool="hray">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="7" x2="11" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <polygon points="13,7 10,5.5 10,8.5" fill="currentColor"/>
-        </svg>
-        <span class="tool-label">H-Ray</span>
-      </button>
-
-      <button data-tool="vline">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-        <span class="tool-label">V-Line</span>
-      </button>
-
-      <button data-tool="cross">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-        <span class="tool-label">Cross</span>
-      </button>
-
-      <button data-tool="info">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="2" y1="11" x2="12" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <circle cx="2" cy="11" r="1.5" fill="currentColor"/>
-          <circle cx="12" cy="3" r="1.5" fill="currentColor"/>
-          <rect x="5" y="5.5" width="4" height="3" rx="0.5" stroke="currentColor" stroke-width="1" fill="none"/>
-        </svg>
-        <span class="tool-label">Info</span>
-      </button>
-
-      <button data-tool="angle">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="2" y1="12" x2="12" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <line x1="2" y1="12" x2="10" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <path d="M6,12 A4,4 0 0,0 4.8,9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/>
-        </svg>
-        <span class="tool-label">Angle</span>
-      </button>
-    </div>
-
-    <div class="tool-group-header" id="channels-header">channels <span class="arrow">&#9660;</span></div>
-    <div class="tool-group-items" id="channels-group">
-      <button data-tool="parallel_channel">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="10" x2="13" y2="4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <line x1="1" y1="13" x2="13" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <line x1="1" y1="10" x2="1" y2="13" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2,2"/>
-          <line x1="13" y1="4" x2="13" y2="7" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2,2"/>
-        </svg>
-        <span class="tool-label">Par Chan</span>
-      </button>
-
-      <button data-tool="regression_trend">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="10" x2="13" y2="4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <line x1="1" y1="7" x2="13" y2="1" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2,2"/>
-          <line x1="1" y1="13" x2="13" y2="7" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2,2"/>
-        </svg>
-        <span class="tool-label">Regress</span>
-      </button>
-
-      <button data-tool="flat_top_bottom">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="11" x2="13" y2="5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <line x1="1" y1="4" x2="13" y2="4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-        <span class="tool-label">Flat T/B</span>
-      </button>
-
-      <button data-tool="disjoint_channel">
-        <svg width="14" height="14" viewBox="0 0 14 14">
-          <line x1="1" y1="4" x2="13" y2="2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <line x1="1" y1="12" x2="13" y2="8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-        <span class="tool-label">Disjoint</span>
-      </button>
-    </div>
-
-    <div class="tool-group-header" style="margin-top:4px">————</div>
-
-    <button id="btn-undo">
-      <svg width="14" height="14" viewBox="0 0 14 14">
-        <path d="M2 7a5 5 0 1 1 1.5 3.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-        <polyline points="2,4 2,7 5,7" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/>
-      </svg>
-      <span class="tool-label">Undo</span>
-    </button>
-    <button id="btn-clear-all">
-      <svg width="14" height="14" viewBox="0 0 14 14">
-        <line x1="3" y1="3" x2="11" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-        <line x1="11" y1="3" x2="3" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-      </svg>
-      <span class="tool-label">Clear</span>
-    </button>
-  </div>
-
   <div id="charts-container">
     <div id="main-pane" class="chart-pane" style="flex:1">
-      <button id="sidebar-toggle">&#9664;</button>
       <div id="chart" class="pane-chart"></div>
-      <svg id="drawing-svg" class="pane-svg"></svg>
     </div>
-    <!-- Indicator sub-panes are inserted here dynamically -->
   </div>
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
 <script>
-const ALL_CANDLES = {candles_json};
-const ALL_VOLUME  = {volume_json};
+// ========== STATE ==========
+let DATASETS = null;
+let currentInterval = '{default_interval}';
+let currentSymbol = '{default_symbol}';
 
+let ALL_CANDLES = [];
+let ALL_VOLUME  = [];
+let ALL_LINE    = [];
+
+// ========== CHART SETUP ==========
 const container = document.getElementById('chart');
 const chart = LightweightCharts.createChart(container, {{
   autoSize: true,
@@ -504,7 +243,7 @@ const chart = LightweightCharts.createChart(container, {{
   grid: {{ vertLines: {{ color: '#1a1a24' }}, horzLines: {{ color: '#1a1a24' }} }},
   crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
   rightPriceScale: {{ borderColor: '#1e1e28' }},
-  timeScale: {{ borderColor: '#1e1e28', timeVisible: {time_visible}, secondsVisible: false }},
+  timeScale: {{ borderColor: '#1e1e28', timeVisible: true, secondsVisible: false }},
   watermark: {{ visible: false }},
 }});
 
@@ -512,96 +251,167 @@ const candleSeries = chart.addCandlestickSeries({{
   upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
   wickUpColor: '#26a69a', wickDownColor: '#ef5350',
 }});
-
 const lineSeries = chart.addLineSeries({{
-  color: '#f0b90b', lineWidth: 2, visible: false,
-  crosshairMarkerRadius: 4,
+  color: '#f0b90b', lineWidth: 2, visible: false, crosshairMarkerRadius: 4,
 }});
-
 const areaSeries = chart.addAreaSeries({{
   lineColor: '#f0b90b', lineWidth: 2,
   topColor: 'rgba(240, 185, 11, 0.35)',
   bottomColor: 'rgba(240, 185, 11, 0.02)',
-  visible: false,
-  crosshairMarkerRadius: 4,
+  visible: false, crosshairMarkerRadius: 4,
 }});
 
-// Pre-build line/area data (close prices)
-const ALL_LINE = ALL_CANDLES.map(c => ({{ time: c.time, value: c.close }}));
+let volumeSeries = null;
+let chartMode = 'candles';
 
-// Volume series is now created in a separate sub-pane (see indicator toggle below)
-let volumeSeries = null;  // set when volume pane is created
+// ========== DATA LOADING ==========
+const loadingEl = document.getElementById('loading');
+const toastEl = document.getElementById('toast');
 
-let chartMode = 'candles'; // 'candles', 'line', or 'area'
+function showLoading() {{ loadingEl.classList.add('active'); }}
+function hideLoading() {{ loadingEl.classList.remove('active'); }}
 
-// ---------- Bar Replay ----------
-let currentIndex = ALL_CANDLES.length;
-let playTimer = null;
-
-const counterEl = document.getElementById('counter');
-const btnPlay   = document.getElementById('btn-play');
-
-function revealUpTo(n) {{
-  n = Math.max(1, Math.min(n, ALL_CANDLES.length));
-  currentIndex = n;
-  candleSeries.setData(ALL_CANDLES.slice(0, n));
-  lineSeries.setData(ALL_LINE.slice(0, n));
-  areaSeries.setData(ALL_LINE.slice(0, n));
-  if (volumeSeries) volumeSeries.setData(ALL_VOLUME.slice(0, n));
-
-  counterEl.textContent = n + ' / ' + ALL_CANDLES.length;
-  if (n >= ALL_CANDLES.length && playTimer) {{ stopPlay(); }}
+function showToast(msg) {{
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  setTimeout(() => toastEl.classList.remove('show'), 3000);
 }}
 
-function stepForward() {{ revealUpTo(currentIndex + 1); }}
-function stepBack()    {{ revealUpTo(currentIndex - 1); }}
-
-function getSpeed() {{
-  const v = parseInt(document.getElementById('speed-slider').value, 10);
-  return 1050 - v * 10;   // 1 → 1040ms, 50 → 550ms, 100 → 50ms
+async function fetchSymbol(symbol) {{
+  showLoading();
+  try {{
+    const resp = await fetch('/api/data', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ symbol }}),
+    }});
+    const data = await resp.json();
+    if (!resp.ok) {{
+      showToast(data.error || 'Failed to fetch data');
+      hideLoading();
+      return;
+    }}
+    currentSymbol = data.symbol;
+    DATASETS = data.datasets;
+    document.title = currentSymbol + ' — OpenFinCh';
+    applyInterval(currentInterval);
+  }} catch (e) {{
+    showToast('Network error: ' + e.message);
+  }}
+  hideLoading();
 }}
 
-function startPlay() {{
-  if (currentIndex >= ALL_CANDLES.length) {{ revealUpTo(1); }}
-  playTimer = setInterval(() => {{
-    if (currentIndex >= ALL_CANDLES.length) {{ stopPlay(); return; }}
-    stepForward();
-  }}, getSpeed());
-  btnPlay.innerHTML = '&#9208; Pause';
-  btnPlay.classList.add('active');
+function applyInterval(interval) {{
+  if (!DATASETS || !DATASETS[interval]) return;
+  currentInterval = interval;
+  const ds = DATASETS[interval];
+  ALL_CANDLES = ds.candles;
+  ALL_VOLUME  = ds.volume;
+  ALL_LINE    = ALL_CANDLES.map(c => ({{ time: c.time, value: c.close }}));
+
+  chart.applyOptions({{
+    timeScale: {{ timeVisible: ds.intraday, secondsVisible: false }},
+  }});
+
+  candleSeries.setData(ALL_CANDLES);
+  lineSeries.setData(ALL_LINE);
+  areaSeries.setData(ALL_LINE);
+  if (volumeSeries) {{
+    volumeSeries.setData(ALL_VOLUME);
+    // Also update sub-pane time scale visibility
+    const sp = subPanes['volume'];
+    if (sp && sp.chart) {{
+      sp.chart.applyOptions({{
+        timeScale: {{ timeVisible: ds.intraday, secondsVisible: false }},
+      }});
+    }}
+  }}
+  chart.timeScale().fitContent();
+
+  Object.values(subPanes).forEach(sp => {{
+    try {{
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) sp.chart.timeScale().setVisibleLogicalRange(range);
+    }} catch(e) {{}}
+  }});
+
+  document.getElementById('interval-select').value = interval;
 }}
 
-function stopPlay() {{
-  clearInterval(playTimer);
-  playTimer = null;
-  btnPlay.innerHTML = '&#9654; Play';
-  btnPlay.classList.remove('active');
-}}
+// ========== TICKER INPUT ==========
+const tickerInput = document.getElementById('ticker-input');
 
-function togglePlay() {{ playTimer ? stopPlay() : startPlay(); }}
-
-// Replay panel toggle
-document.getElementById('btn-replay-toggle').addEventListener('click', () => {{
-  const ctrl = document.getElementById('controls');
-  const isOpen = ctrl.style.display !== 'none';
-  ctrl.style.display = isOpen ? 'none' : 'flex';
-  const btn = document.getElementById('btn-replay-toggle');
-  btn.classList.toggle('open', !isOpen);
-  btn.innerHTML = isOpen ? '&#9654; Replay &#9660;' : '&#9654; Replay &#9650;';
+tickerInput.addEventListener('keydown', e => {{
+  if (e.key === 'Enter') {{
+    e.preventDefault();
+    const sym = tickerInput.value.trim().toUpperCase();
+    if (sym && sym !== currentSymbol) {{
+      tickerInput.value = sym;
+      fetchSymbol(sym);
+    }}
+    tickerInput.blur();
+  }}
 }});
 
-// Re-create interval when speed changes during playback
-document.getElementById('speed-slider').addEventListener('input', () => {{
-  if (playTimer) {{ stopPlay(); startPlay(); }}
+tickerInput.addEventListener('focus', () => tickerInput.select());
+
+// ========== INTERVAL DROPDOWN ==========
+const intervalSelect = document.getElementById('interval-select');
+const customGroup = document.getElementById('custom-interval-group');
+
+intervalSelect.addEventListener('change', (e) => {{
+  if (e.target.value === 'custom') {{
+    customGroup.classList.add('visible');
+  }} else {{
+    customGroup.classList.remove('visible');
+    applyInterval(e.target.value);
+  }}
 }});
 
-document.getElementById('btn-back').addEventListener('click', () => {{ stopPlay(); stepBack(); }});
-document.getElementById('btn-fwd').addEventListener('click',  () => {{ stopPlay(); stepForward(); }});
-document.getElementById('btn-play').addEventListener('click', togglePlay);
-document.getElementById('btn-reset').addEventListener('click', () => {{ stopPlay(); revealUpTo(1); }});
-document.getElementById('btn-all').addEventListener('click',  () => {{ stopPlay(); revealUpTo(ALL_CANDLES.length); chart.timeScale().fitContent(); }});
+// ========== CUSTOM INTERVAL ==========
+async function applyCustomInterval() {{
+  const value = parseInt(document.getElementById('custom-value').value, 10);
+  const unit = document.getElementById('custom-unit').value;
+  if (!value || value < 1) {{ showToast('Enter a value ≥ 1'); return; }}
 
-// ---------- Chart Type Dropdown ----------
+  showLoading();
+  try {{
+    const resp = await fetch('/api/custom_interval', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ symbol: currentSymbol, value, unit }}),
+    }});
+    const data = await resp.json();
+    if (!resp.ok) {{ showToast(data.error || 'Failed'); hideLoading(); return; }}
+
+    const ds = data.dataset;
+    ALL_CANDLES = ds.candles;
+    ALL_VOLUME  = ds.volume;
+    ALL_LINE    = ALL_CANDLES.map(c => ({{ time: c.time, value: c.close }}));
+
+    chart.applyOptions({{ timeScale: {{ timeVisible: ds.intraday, secondsVisible: false }} }});
+    candleSeries.setData(ALL_CANDLES);
+    lineSeries.setData(ALL_LINE);
+    areaSeries.setData(ALL_LINE);
+    if (volumeSeries) {{
+      volumeSeries.setData(ALL_VOLUME);
+      const sp = subPanes['volume'];
+      if (sp && sp.chart) sp.chart.applyOptions({{ timeScale: {{ timeVisible: ds.intraday, secondsVisible: false }} }});
+    }}
+    chart.timeScale().fitContent();
+    currentInterval = 'custom';
+  }} catch (e) {{
+    showToast('Error: ' + e.message);
+  }}
+  hideLoading();
+}}
+
+document.getElementById('custom-apply').addEventListener('click', applyCustomInterval);
+document.getElementById('custom-value').addEventListener('keydown', e => {{
+  if (e.key === 'Enter') {{ e.preventDefault(); applyCustomInterval(); }}
+}});
+
+// ========== CHART TYPE ==========
 const chartTypeSelect = document.getElementById('chart-type');
 
 function setChartMode(mode) {{
@@ -614,18 +424,7 @@ function setChartMode(mode) {{
 
 chartTypeSelect.addEventListener('change', () => setChartMode(chartTypeSelect.value));
 
-// Keyboard shortcuts (replay)
-document.addEventListener('keydown', e => {{
-  if (e.code === 'Space')      {{ e.preventDefault(); togglePlay(); }}
-  if (e.code === 'ArrowRight') {{ e.preventDefault(); stopPlay(); stepForward(); }}
-  if (e.code === 'ArrowLeft')  {{ e.preventDefault(); stopPlay(); stepBack(); }}
-}});
-
-// Initial state: show all candles
-revealUpTo(ALL_CANDLES.length);
-chart.timeScale().fitContent();
-
-// ---------- OHLC Legend ----------
+// ========== OHLC LEGEND ==========
 const lo = document.getElementById('lo');
 const lh = document.getElementById('lh');
 const ll = document.getElementById('ll');
@@ -640,9 +439,8 @@ function formatVol(v) {{
 }}
 
 chart.subscribeCrosshairMove(param => {{
-  if (!param || !param.time) {{ return; }}
+  if (!param || !param.time) return;
   const candle = param.seriesData.get(candleSeries);
-  const line = param.seriesData.get(lineSeries);
   const vol = param.seriesData.get(volumeSeries);
   if (chartMode === 'candles' && candle) {{
     const cls = candle.close >= candle.open ? 'up' : 'down';
@@ -659,24 +457,14 @@ chart.subscribeCrosshairMove(param => {{
       lc.textContent = pt.value.toFixed(2); lc.className = 'val';
     }}
   }}
-  if (volumeSeries && vol) {{
-    lv.textContent = formatVol(vol.value);
-  }}
-  // Update crosshair on sub-pane charts
-  Object.values(subPanes).forEach(sp => {{
-    if (sp.chart && param.time) {{
-      sp.chart.setCrosshairPosition(undefined, undefined, sp.series);
-    }}
-  }});
+  if (volumeSeries && vol) {{ lv.textContent = formatVol(vol.value); }}
 }});
 
-// ========== MULTI-PANE INDICATOR SYSTEM ==========
-
+// ========== MULTI-PANE SYSTEM ==========
 const chartsContainer = document.getElementById('charts-container');
-const subPanes = {{}};  // {{ id: {{ chart, series, svg, container, divider, cleanup }} }}
+const subPanes = {{}};
 let syncingTimeScale = false;
 
-// Sync main chart time scale -> sub-panes
 chart.timeScale().subscribeVisibleLogicalRangeChange(range => {{
   if (syncingTimeScale) return;
   syncingTimeScale = true;
@@ -687,12 +475,10 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {{
 }});
 
 function createSubPane(id, label, height) {{
-  // Divider
   const divider = document.createElement('div');
   divider.className = 'pane-divider';
   chartsContainer.appendChild(divider);
 
-  // Pane container
   const paneDiv = document.createElement('div');
   paneDiv.className = 'chart-pane';
   paneDiv.id = 'pane-' + id;
@@ -700,35 +486,25 @@ function createSubPane(id, label, height) {{
   paneDiv.style.flexShrink = '0';
   chartsContainer.appendChild(paneDiv);
 
-  // Label
   const lbl = document.createElement('div');
   lbl.className = 'pane-label';
   lbl.textContent = label;
   paneDiv.appendChild(lbl);
 
-  // Chart container
   const chartDiv = document.createElement('div');
   chartDiv.className = 'pane-chart';
   paneDiv.appendChild(chartDiv);
 
-  // Drawing SVG
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'pane-svg');
-  svg.setAttribute('width', '100%');
-  svg.setAttribute('height', '100%');
-  paneDiv.appendChild(svg);
-
-  // Create chart
+  const isIntraday = DATASETS && DATASETS[currentInterval] ? DATASETS[currentInterval].intraday : true;
   const subChart = LightweightCharts.createChart(chartDiv, {{
     autoSize: true,
     layout: {{ background: {{ type: 'solid', color: '#0a0a0f' }}, textColor: '#e0e0e0' }},
     grid: {{ vertLines: {{ color: '#1a1a24' }}, horzLines: {{ color: '#1a1a24' }} }},
     crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
     rightPriceScale: {{ borderColor: '#1e1e28' }},
-    timeScale: {{ borderColor: '#1e1e28', timeVisible: {time_visible}, secondsVisible: false, visible: true }},
+    timeScale: {{ borderColor: '#1e1e28', timeVisible: isIntraday, secondsVisible: false, visible: true }},
   }});
 
-  // Sync sub-pane time scale -> main chart
   subChart.timeScale().subscribeVisibleLogicalRangeChange(range => {{
     if (syncingTimeScale) return;
     syncingTimeScale = true;
@@ -739,15 +515,6 @@ function createSubPane(id, label, height) {{
     syncingTimeScale = false;
   }});
 
-  // Crosshair sync: sub-pane -> main
-  subChart.subscribeCrosshairMove(param => {{
-    if (param.time) {{
-      // Find candle data for this time to set crosshair on main
-      // (lightweight-charts handles this via time sync)
-    }}
-  }});
-
-  // Divider drag resize
   let startY = 0, startH = 0;
   divider.addEventListener('mousedown', e => {{
     startY = e.clientY;
@@ -766,10 +533,7 @@ function createSubPane(id, label, height) {{
     document.addEventListener('mouseup', onUp);
   }});
 
-  // Wire drawing events on this pane's SVG
-  setupPaneSvgEvents(id, svg, subChart, null);
-
-  const pane = {{ chart: subChart, series: null, svg, container: paneDiv, divider, chartDiv }};
+  const pane = {{ chart: subChart, series: null, container: paneDiv, divider, chartDiv }};
   subPanes[id] = pane;
   return pane;
 }}
@@ -780,13 +544,10 @@ function destroySubPane(id) {{
   sp.chart.remove();
   sp.container.remove();
   sp.divider.remove();
-  // Remove drawings that belong to this pane
-  drawings = drawings.filter(d => d.paneId !== id);
-  saveDrawings();
   delete subPanes[id];
 }}
 
-// ---------- Indicators Panel ----------
+// ========== INDICATORS PANEL ==========
 document.getElementById('btn-indicators-toggle').addEventListener('click', () => {{
   const panel = document.getElementById('indicators-panel');
   const isOpen = panel.style.display !== 'none';
@@ -796,696 +557,791 @@ document.getElementById('btn-indicators-toggle').addEventListener('click', () =>
   btn.innerHTML = isOpen ? '&#128202; Indicators &#9660;' : '&#128202; Indicators &#9650;';
 }});
 
-// Volume indicator toggle
-document.getElementById('ind-volume').addEventListener('change', (e) => {{
-  const on = e.target.checked;
-  document.getElementById('vol-legend').style.display = on ? '' : 'none';
-  if (on) {{
+// ========== SMA CALCULATION ==========
+function computeSMA(candles, period) {{
+  const result = [];
+  for (let i = 0; i < candles.length; i++) {{
+    if (i < period - 1) continue;
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) {{
+      sum += candles[j].close;
+    }}
+    result.push({{ time: candles[i].time, value: sum / period }});
+  }}
+  return result;
+}}
+
+// ========== EMA CALCULATION ==========
+function computeEMA(candles, period) {{
+  if (candles.length === 0) return [];
+  const k = 2 / (1 + period); // smoothing factor
+  const result = [];
+  // First EMA value = SMA of first 'period' values
+  let sum = 0;
+  for (let i = 0; i < Math.min(period, candles.length); i++) {{
+    sum += candles[i].close;
+  }}
+  let ema = sum / Math.min(period, candles.length);
+  result.push({{ time: candles[Math.min(period - 1, candles.length - 1)].time, value: ema }});
+  // Subsequent values use EMA formula
+  for (let i = period; i < candles.length; i++) {{
+    ema = (candles[i].close * k) + (ema * (1 - k));
+    result.push({{ time: candles[i].time, value: ema }});
+  }}
+  return result;
+}}
+
+// ========== ATR CALCULATION ==========
+function computeATR(candles, period) {{
+  if (candles.length < 2) return [];
+  const trs = [];
+  // Calculate TR for all candles
+  // First TR is just High - Low
+  trs.push({{ time: candles[0].time, value: candles[0].high - candles[0].low }});
+  
+  for (let i = 1; i < candles.length; i++) {{
+    const h = candles[i].high;
+    const l = candles[i].low;
+    const pc = candles[i].close; // Previous close is actually candles[i-1].close
+    // Correct logic: High - Low, |High - PrevClose|, |Low - PrevClose|
+    const prevClose = candles[i-1].close;
+    const tr = Math.max(h - l, Math.abs(h - prevClose), Math.abs(l - prevClose));
+    trs.push({{ time: candles[i].time, value: tr }});
+  }}
+
+  // Calculate ATR using RMA (Wilder's Smoothing)
+  // First ATR = SMA of first 'period' TRs
+  const result = [];
+  let sum = 0;
+  if (trs.length < period) return [];
+
+  for (let i = 0; i < period; i++) {{
+    sum += trs[i].value;
+  }}
+  let atr = sum / period;
+  result.push({{ time: trs[period - 1].time, value: atr }});
+
+  // Subsequent ATR: (PrevATR * (period - 1) + CurrentTR) / period
+  for (let i = period; i < trs.length; i++) {{
+    atr = (atr * (period - 1) + trs[i].value) / period;
+    result.push({{ time: trs[i].time, value: atr }});
+  }}
+  return result;
+}}
+
+// ========== MACD CALCULATION ==========
+function calculateEMAValues(data, period) {{
+  if (data.length === 0) return [];
+  const k = 2 / (1 + period);
+  const result = [];
+  let sum = 0;
+  const startIdx = Math.min(period, data.length);
+  for (let i = 0; i < startIdx; i++) {{
+    sum += data[i].value;
+  }}
+  let ema = sum / startIdx;
+  result.push({{ time: data[Math.min(period - 1, data.length - 1)].time, value: ema }});
+  
+  for (let i = period; i < data.length; i++) {{
+    ema = (data[i].value * k) + (ema * (1 - k));
+    result.push({{ time: data[i].time, value: ema }});
+  }}
+  return result;
+}}
+
+function computeMACD(candles, fastPeriod, slowPeriod, signalPeriod) {{
+  if (candles.length === 0) return null;
+  const closeSeries = candles.map(c => ({{ time: c.time, value: c.close }}));
+  
+  const fastEMA = calculateEMAValues(closeSeries, fastPeriod);
+  const slowEMA = calculateEMAValues(closeSeries, slowPeriod);
+  
+  // Align series
+  const macdLine = [];
+  // We need to map by time. Since both come from same candles, times are unique and sorted.
+  // Efficient way: iterate and match.
+  const fastMap = new Map(fastEMA.map(i => [i.time, i.value]));
+  const slowMap = new Map(slowEMA.map(i => [i.time, i.value]));
+  
+  // MACD = Fast - Slow
+  for (const item of slowEMA) {{ // Slow starts later usually
+    if (fastMap.has(item.time)) {{
+      macdLine.push({{ time: item.time, value: fastMap.get(item.time) - item.value }});
+    }}
+  }}
+  
+  const signalLine = calculateEMAValues(macdLine, signalPeriod);
+  
+  // Histogram = MACD - Signal
+  const histogram = [];
+  const signalMap = new Map(signalLine.map(i => [i.time, i.value]));
+  for (const item of macdLine) {{
+    if (signalMap.has(item.time)) {{
+      const sig = signalMap.get(item.time);
+      const histVal = item.value - sig;
+      // Color based on value and growth could be added here, but simple green/red is fine for now
+      // Actually standard: Bright Green (grow up), Dark Green (fall up), Bright Red (grow down), Dark Red (fall down)
+      // For simplicity: Green if >= 0, Red if < 0.
+      const color = histVal >= 0 ? '#26a69a' : '#ef5350';
+      histogram.push({{ time: item.time, value: histVal, color: color }});
+    }}
+  }}
+  
+  return {{ macd: macdLine, signal: signalLine, histogram }};
+}}
+
+// ========== BOLLINGER BANDS CALCULATION ==========
+function computeBB(candles, period, stdDevMult) {{
+  if (candles.length < period) return null;
+  
+  const result = {{ upper: [], middle: [], lower: [] }};
+  
+  for (let i = 0; i < candles.length; i++) {{
+    if (i < period - 1) continue;
+    
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) {{
+      sum += candles[j].close;
+    }}
+    const sma = sum / period;
+    
+    let sumSqDiff = 0;
+    for (let j = i - period + 1; j <= i; j++) {{
+      const diff = candles[j].close - sma;
+      sumSqDiff += diff * diff;
+    }}
+    const stdDev = Math.sqrt(sumSqDiff / period);
+    
+    const time = candles[i].time;
+    result.middle.push({{ time, value: sma }});
+    result.upper.push({{ time, value: sma + (stdDev * stdDevMult) }});
+    result.lower.push({{ time, value: sma - (stdDev * stdDevMult) }});
+  }}
+  
+  return result;
+}}
+
+// ========== ADX CALCULATION ==========
+function computeADX(candles, period) {{
+  if (candles.length < 2 * period) return []; // Need enough data for initial smoothing
+  
+  // 1. Calculate TR, +DM, -DM
+  // TR = Max(H-L, |H-Cp|, |L-Cp|)
+  // +DM = (H - Hp) > (Lp - L) ? Max(H - Hp, 0) : 0
+  // -DM = (Lp - L) > (H - Hp) ? Max(Lp - L, 0) : 0
+  
+  const trs = [];
+  const plusDMs = [];
+  const minusDMs = [];
+  
+  // First candle has no prior, so skip or seed with 0? 
+  // Wilder starts calc from 2nd period.
+  // We align arrays so index i corresponds to candles[i]
+  
+  trs.push(0); // padded
+  plusDMs.push(0);
+  minusDMs.push(0);
+  
+  for (let i = 1; i < candles.length; i++) {{
+    const curr = candles[i];
+    const prev = candles[i-1];
+    
+    const h = curr.high;
+    const l = curr.low;
+    const ph = prev.high;
+    const pl = prev.low;
+    const pc = prev.close;
+    
+    const tr = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+    trs.push(tr);
+    
+    const upMove = h - ph;
+    const downMove = pl - l;
+    
+    let pDM = 0;
+    let mDM = 0;
+    
+    if (upMove > downMove && upMove > 0) {{
+      pDM = upMove;
+    }}
+    if (downMove > upMove && downMove > 0) {{
+      mDM = downMove;
+    }}
+    
+    plusDMs.push(pDM);
+    minusDMs.push(mDM);
+  }}
+  
+  // 2. Smooth TR, +DM, -DM using Wilder's Smoothing (RMA)
+  // First value = Sum of first N
+  // Subsequent = (Prev * (N-1) + Curr) / N
+  
+  const smoothTR = [];
+  const smoothPDM = [];
+  const smoothMDM = [];
+  
+  // Helper for RMA array generation
+  // We need to start from index 'period' (1-based count in Logic, so index period)
+  // Logic: First valid smoothed value is at index 'period'.
+  
+  function calculateRMA(values, n) {{
+    const smooth = new Array(values.length).fill(0);
+    if (values.length <= n) return smooth;
+    
+    let sum = 0;
+    for(let i = 1; i <= n; i++) sum += values[i];
+    
+    smooth[n] = sum;
+    
+    for(let i = n + 1; i < values.length; i++) {{
+      smooth[i] = smooth[i-1] - (smooth[i-1] / n) + values[i];
+    }}
+    return smooth;
+  }}
+  
+  const atr = calculateRMA(trs, period);
+  const admP = calculateRMA(plusDMs, period); // ADM+
+  const admM = calculateRMA(minusDMs, period); // ADM-
+  
+  // 3. Calculate +DI, -DI, DX
+  // +DI = 100 * (ADM+ / ATR)
+  // -DI = 100 * (ADM- / ATR)
+  // DX = 100 * |+DI - -DI| / (+DI + -DI)
+  
+  const dxs = new Array(candles.length).fill(0);
+  
+  // Valid DX starts from index 'period'
+  for(let i = period; i < candles.length; i++) {{
+    if (atr[i] === 0) continue;
+    
+    const pDI = 100 * (admP[i] / atr[i]);
+    const mDI = 100 * (admM[i] / atr[i]);
+    
+    const sumDI = pDI + mDI;
+    if (sumDI === 0) {{
+      dxs[i] = 0;
+    }} else {{
+      dxs[i] = 100 * Math.abs(pDI - mDI) / sumDI;
+    }}
+  }}
+  
+  // 4. ADX = RMA of DX
+  // First ADX at index 2*period - 1 ? 
+  // Wilder says ADX is smoothed DX.
+  // First ADX = Average of first N DXs (where DXs are valid)
+  // Valid DXs start at index 'period'. So first ADX is at index period + period - 1 = 2*period - 1.
+  
+  const adx = new Array(candles.length).fill(0);
+  
+  // Sum first 'period' DX values starting from 'period'
+  let sumDX = 0;
+  for(let i = period; i < period + period; i++) {{
+    if(i >= dxs.length) break;
+    sumDX += dxs[i];
+  }}
+  
+  const startIdx = 2 * period - 1;
+  if(startIdx < dxs.length) {{
+    adx[startIdx] = sumDX / period; // Is first ADX just SMA? Wilder often uses SMA to seed.
+    // Actually typically Standard logic: First ADX = Mean(DX over period). Subsequent = ((Prev * (N-1)) + Curr) / N
+    
+    for(let i = startIdx + 1; i < candles.length; i++) {{
+      adx[i] = ((adx[i-1] * (period - 1)) + dxs[i]) / period;
+    }}
+  }}
+  
+  // 5. Result
+  const result = [];
+  for(let i = startIdx; i < candles.length; i++) {{
+    result.push({{ time: candles[i].time, value: adx[i] }});
+  }}
+  
+    return result;
+}}
+
+// ========== AROON CALCULATION ==========
+function computeAroon(candles, period) {{
+  if (candles.length < period) return null;
+  const upLine = [];
+  const downLine = [];
+  
+  // Aroon Up = ((Period - Days Since High) / Period) * 100
+  // Aroon Down = ((Period - Days Since Low) / Period) * 100
+  // "Days Since" means 0 if current is High.
+  
+  for (let i = period; i < candles.length; i++) {{
+    let highest = -Infinity;
+    let lowest = Infinity;
+    let highIdx = -1;
+    let lowIdx = -1;
+    
+    // Look back 'period' candles + 1 (period+1 window is standard? Or 0 to period?)
+    // Standard is: Look at last N candles (including current).
+    // e.g. 14 period. Look at i, i-1, ... i-14? No, window size is period + 1 usually?
+    // TradingView says "measures how many periods have passed since price has recorded an n-period high".
+    // Usually standard is lookback window of size N+1 including current? Or size N?
+    // Let's assume size N+1 (0 to period).
+    // Actually standard def: look over last Period candles.
+    
+    for (let j = 0; j <= period; j++) {{
+      const idx = i - j;
+      if (idx < 0) continue;
+      const c = candles[idx];
+      if (c.high > highest) {{
+        highest = c.high;
+        highIdx = j; // days since
+      }}
+      if (c.low < lowest) {{
+        lowest = c.low;
+        lowIdx = j; // days since
+      }}
+    }}
+    
+    // But Aroon calculation usually excludes current bar? 
+    // Tradingview: "14 Day Aroon-Up will take the number of days since price last recorded a 14 day high".
+    // If High is today, days since is 0.
+    
+    const aroonUp = ((period - highIdx) / period) * 100;
+    const aroonDown = ((period - lowIdx) / period) * 100;
+    
+    upLine.push({{ time: candles[i].time, value: aroonUp }});
+    downLine.push({{ time: candles[i].time, value: aroonDown }});
+  }}
+  
+  return {{ up: upLine, down: downLine }};
+}}
+
+function computeAroonOsc(candles, period) {{
+  const aroon = computeAroon(candles, period);
+  if (!aroon) return null;
+  
+  const result = [];
+  // Arrays should be same length and aligned by time
+  for(let i = 0; i < aroon.up.length; i++) {{
+    const val = aroon.up[i].value - aroon.down[i].value;
+    result.push({{ time: aroon.up[i].time, value: val }});
+  }}
+  return result;
+}}
+
+// ========== INDICATOR MANAGEMENT ==========
+const activeIndicators = {{}};
+let indicatorIdCounter = 0;
+const MA_COLORS = ['#2962ff', '#e040fb', '#00bcd4', '#ff9800', '#4caf50', '#f44336'];
+let maColorIdx = 0;
+
+function addIndicator(type) {{
+  const id = 'ind_' + (indicatorIdCounter++);
+  if (type === 'volume') {{
+    if (activeIndicators['volume']) return; // only one volume
     const pane = createSubPane('volume', 'Volume', 150);
     volumeSeries = pane.chart.addHistogramSeries({{
       priceFormat: {{ type: 'volume' }},
       priceScaleId: 'vol',
     }});
     pane.series = volumeSeries;
-    volumeSeries.setData(ALL_VOLUME.slice(0, currentIndex));
-    // Sync time range
+    if (ALL_VOLUME.length) volumeSeries.setData(ALL_VOLUME);
     try {{
       const range = chart.timeScale().getVisibleLogicalRange();
       if (range) pane.chart.timeScale().setVisibleLogicalRange(range);
     }} catch(e) {{}}
-    redrawAll();
-  }} else {{
+    document.getElementById('vol-legend').style.display = '';
+    activeIndicators['volume'] = {{ type: 'volume', id: 'volume' }};
+    renderActiveIndicators();
+  }} else if (type === 'sma' || type === 'ema') {{
+    const color = MA_COLORS[maColorIdx % MA_COLORS.length];
+    maColorIdx++;
+    const period = 9;
+    const series = chart.addLineSeries({{
+      color: color,
+      lineWidth: 2,
+      crosshairMarkerRadius: 3,
+      priceScaleId: 'right',
+      lastValueVisible: false,
+      priceLineVisible: false,
+    }});
+    const computeFn = type === 'ema' ? computeEMA : computeSMA;
+    const data = computeFn(ALL_CANDLES, period);
+    series.setData(data);
+    activeIndicators[id] = {{ type, id, series, period, color }};
+    renderActiveIndicators();
+  }} else if (type === 'atr') {{
+    if (activeIndicators['atr']) return; // single ATR pane for now implementation-wise
+    const pane = createSubPane('atr', 'ATR', 150);
+    const series = pane.chart.addLineSeries({{
+      color: '#b71c1c', lineWidth: 2,
+      priceScaleId: 'atr',
+      lastValueVisible: true,
+      priceLineVisible: true,
+    }});
+    const period = 14; 
+    const data = computeATR(ALL_CANDLES, period);
+    series.setData(data);
+    
+    try {{
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) pane.chart.timeScale().setVisibleLogicalRange(range);
+    }} catch(e) {{}}
+    
+    activeIndicators['atr'] = {{ type: 'atr', id: 'atr', pane, series, period }};
+    renderActiveIndicators();
+  }} else if (type === 'macd') {{
+    if (activeIndicators['macd']) return;
+    const pane = createSubPane('macd', 'MACD', 150);
+    
+    // Histogram
+    const histSeries = pane.chart.addHistogramSeries({{ priceScaleId: 'macd' }});
+    // MACD Line (Fast) - Blue
+    const macdSeries = pane.chart.addLineSeries({{
+      color: '#2962ff', lineWidth: 2, priceScaleId: 'macd'
+    }});
+    // Signal Line (Slow) - Orange
+    const signalSeries = pane.chart.addLineSeries({{
+      color: '#ff6d00', lineWidth: 2, priceScaleId: 'macd'
+    }});
+    
+    const config = {{ fast: 12, slow: 26, signal: 9 }};
+    const data = computeMACD(ALL_CANDLES, config.fast, config.slow, config.signal);
+    
+    if (data) {{
+      histSeries.setData(data.histogram);
+      macdSeries.setData(data.macd);
+      signalSeries.setData(data.signal);
+    }}
+
+    try {{
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) pane.chart.timeScale().setVisibleLogicalRange(range);
+    }} catch(e) {{}}
+
+    activeIndicators['macd'] = {{ 
+      type: 'macd', id: 'macd', pane, 
+      histSeries, macdSeries, signalSeries, 
+      config 
+    }};
+    renderActiveIndicators();
+  }} else if (type === 'bb') {{
+    const color = '#2962ff'; // Default BB color
+    const middleSeries = chart.addLineSeries({{
+      color: '#ff6d00', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false
+    }});
+    const upperSeries = chart.addLineSeries({{
+      color: color, lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false
+    }});
+    const lowerSeries = chart.addLineSeries({{
+      color: color, lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false
+    }});
+    
+    const config = {{ period: 20, mult: 2 }};
+    const data = computeBB(ALL_CANDLES, config.period, config.mult);
+    
+    if (data) {{
+      middleSeries.setData(data.middle);
+      upperSeries.setData(data.upper);
+      lowerSeries.setData(data.lower);
+    }}
+    
+    activeIndicators[id] = {{ 
+      type: 'bb', id, 
+      middleSeries, upperSeries, lowerSeries,
+      config 
+    }};
+    renderActiveIndicators();
+  }} else if (type === 'adx') {{
+    if (activeIndicators['adx']) return;
+    const pane = createSubPane('adx', 'ADX', 150);
+    const series = pane.chart.addLineSeries({{
+      color: '#ff4081', lineWidth: 2, priceScaleId: 'adx'
+    }});
+    const period = 14; 
+    const data = computeADX(ALL_CANDLES, period);
+    series.setData(data);
+    
+    try {{
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) pane.chart.timeScale().setVisibleLogicalRange(range);
+    }} catch(e) {{}}
+    
+    activeIndicators['adx'] = {{ type: 'adx', id: 'adx', pane, series, period }};
+    renderActiveIndicators();
+  }} else if (type === 'aroon') {{
+    if (activeIndicators['aroon']) return;
+    const pane = createSubPane('aroon', 'Aroon', 150);
+    const upSeries = pane.chart.addLineSeries({{
+      color: '#ff6d00', lineWidth: 2, priceScaleId: 'aroon', title: 'Aroon Up'
+    }});
+    const downSeries = pane.chart.addLineSeries({{
+      color: '#2962ff', lineWidth: 2, priceScaleId: 'aroon', title: 'Aroon Down'
+    }});
+    
+    const period = 14;
+    const data = computeAroon(ALL_CANDLES, period);
+    if (data) {{
+      upSeries.setData(data.up);
+      downSeries.setData(data.down);
+    }}
+    
+    try {{
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) pane.chart.timeScale().setVisibleLogicalRange(range);
+    }} catch(e) {{}}
+    
+    activeIndicators['aroon'] = {{ type: 'aroon', id: 'aroon', pane, upSeries, downSeries, period }};
+    renderActiveIndicators();
+  }} else if (type === 'aroon_osc') {{
+    if (activeIndicators['aroon_osc']) return;
+    const pane = createSubPane('aroon_osc', 'Aroon Osc', 150);
+    const series = pane.chart.addLineSeries({{
+      color: '#9c27b0', lineWidth: 2, priceScaleId: 'aroon_osc'
+    }});
+    // Add zero line?
+    // Lightweight charts doesn't have direct horizontal lines, but we can add a primitive or just rely on grid.
+    // Actually we can add a PriceLine if we want, but it's attached to a series.
+    // Let's just create a zero line series or use createPriceLine on the series.
+    series.createPriceLine({{
+      price: 0, color: '#787b86', lineWidth: 1, lineStyle: 2, axisLabelVisible: false
+    }});
+    
+    const period = 14;
+    const data = computeAroonOsc(ALL_CANDLES, period);
+    if (data) series.setData(data);
+    
+    try {{
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) pane.chart.timeScale().setVisibleLogicalRange(range);
+    }} catch(e) {{}}
+    
+    activeIndicators['aroon_osc'] = {{ type: 'aroon_osc', id: 'aroon_osc', pane, series, period }};
+    renderActiveIndicators();
+  }}
+}}
+
+function removeIndicator(id) {{
+  const ind = activeIndicators[id];
+  if (!ind) return;
+  if (ind.type === 'volume') {{
     volumeSeries = null;
     destroySubPane('volume');
-    redrawAll();
+    document.getElementById('vol-legend').style.display = 'none';
+  }} else if (ind.type === 'sma' || ind.type === 'ema') {{
+    chart.removeSeries(ind.series);
+  }} else if (ind.type === 'atr') {{
+    destroySubPane('atr');
+  }} else if (ind.type === 'macd') {{
+    destroySubPane('macd');
+  }} else if (ind.type === 'bb') {{
+    chart.removeSeries(ind.middleSeries);
+    chart.removeSeries(ind.upperSeries);
+    chart.removeSeries(ind.lowerSeries);
+  }} else if (ind.type === 'adx') {{
+    destroySubPane('adx');
+  }} else if (ind.type === 'aroon') {{
+    destroySubPane('aroon');
+  }} else if (ind.type === 'aroon_osc') {{
+    destroySubPane('aroon_osc');
   }}
+  delete activeIndicators[id];
+  renderActiveIndicators();
+}}
+
+function updateIndicatorPeriod(id, newVal) {{
+  const ind = activeIndicators[id];
+  if (!ind) return;
+  
+  if (ind.type === 'macd') {{
+    const parts = String(newVal).split(',').map(p => parseInt(p.trim(), 10)).filter(n => !isNaN(n));
+    if (parts.length === 3) {{
+      ind.config = {{ fast: parts[0], slow: parts[1], signal: parts[2] }};
+      const data = computeMACD(ALL_CANDLES, ind.config.fast, ind.config.slow, ind.config.signal);
+      if (data) {{
+        ind.histSeries.setData(data.histogram);
+        ind.macdSeries.setData(data.macd);
+        ind.signalSeries.setData(data.signal);
+      }}
+    }}
+    return;
+  }} else if (ind.type === 'bb') {{
+    // Parse "20, 2"
+    const parts = String(newVal).split(',').map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
+    if (parts.length >= 2) {{
+      ind.config = {{ period: Math.round(parts[0]), mult: parts[1] }};
+      const data = computeBB(ALL_CANDLES, ind.config.period, ind.config.mult);
+      if (data) {{
+        ind.middleSeries.setData(data.middle);
+        ind.upperSeries.setData(data.upper);
+        ind.lowerSeries.setData(data.lower);
+      }}
+    }}
+    return;
+  }}
+
+  // Single value indicators
+  const newPeriod = parseInt(newVal, 10);
+  if (isNaN(newPeriod) || newPeriod < 1) return;
+
+  if (ind.type === 'sma' || ind.type === 'ema') {{
+    ind.period = newPeriod;
+    const computeFn = ind.type === 'ema' ? computeEMA : computeSMA;
+    const data = computeFn(ALL_CANDLES, newPeriod);
+    ind.series.setData(data);
+  }} else if (ind.type === 'atr') {{
+    ind.period = newPeriod;
+    const data = computeATR(ALL_CANDLES, newPeriod);
+    ind.series.setData(data);
+  }} else if (ind.type === 'adx') {{
+    ind.period = newPeriod;
+    const data = computeADX(ALL_CANDLES, newPeriod);
+    ind.series.setData(data);
+  }} else if (ind.type === 'aroon') {{
+    ind.period = newPeriod;
+    const data = computeAroon(ALL_CANDLES, newPeriod);
+    if (data) {{
+      ind.upSeries.setData(data.up);
+      ind.downSeries.setData(data.down);
+    }}
+  }} else if (ind.type === 'aroon_osc') {{
+    ind.period = newPeriod;
+    const data = computeAroonOsc(ALL_CANDLES, newPeriod);
+    if (data) ind.series.setData(data);
+  }}
+}}
+
+function refreshAllIndicators() {{
+  // Called after data changes (ticker or interval switch)
+  Object.values(activeIndicators).forEach(ind => {{
+    if (ind.type === 'sma' || ind.type === 'ema') {{
+      const computeFn = ind.type === 'ema' ? computeEMA : computeSMA;
+      const data = computeFn(ALL_CANDLES, ind.period);
+      ind.series.setData(data);
+    }} else if (ind.type === 'atr') {{
+      const data = computeATR(ALL_CANDLES, ind.period);
+      ind.series.setData(data);
+    }} else if (ind.type === 'macd') {{
+      const data = computeMACD(ALL_CANDLES, ind.config.fast, ind.config.slow, ind.config.signal);
+      if (data) {{
+        ind.histSeries.setData(data.histogram);
+        ind.macdSeries.setData(data.macd);
+        ind.signalSeries.setData(data.signal);
+      }}
+    }} else if (ind.type === 'bb') {{
+      const data = computeBB(ALL_CANDLES, ind.config.period, ind.config.mult);
+      if (data) {{
+        ind.middleSeries.setData(data.middle);
+        ind.upperSeries.setData(data.upper);
+        ind.lowerSeries.setData(data.lower);
+      }}
+    }} else if (ind.type === 'adx') {{
+      const data = computeADX(ALL_CANDLES, ind.period);
+      ind.series.setData(data);
+    }} else if (ind.type === 'aroon') {{
+      const data = computeAroon(ALL_CANDLES, ind.period);
+      if (data) {{
+        ind.upSeries.setData(data.up);
+        ind.downSeries.setData(data.down);
+      }}
+    }} else if (ind.type === 'aroon_osc') {{
+      const data = computeAroonOsc(ALL_CANDLES, ind.period);
+      if (data) ind.series.setData(data);
+    }}
+  }});
+}}
+
+function renderActiveIndicators() {{
+  const container = document.getElementById('active-indicators');
+  container.innerHTML = '';
+  Object.values(activeIndicators).forEach(ind => {{
+    const el = document.createElement('div');
+    el.className = 'active-indicator';
+    if (ind.type === 'volume') {{
+      el.innerHTML = '<span>Vol</span><button class="remove-ind" title="Remove">&times;</button>';
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator('volume'));
+    }} else if (ind.type === 'sma' || ind.type === 'ema') {{
+      const label = ind.type.toUpperCase();
+      el.innerHTML = `<span class="swatch" style="background:${{ind.color}}"></span>${{label}} <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'atr') {{
+      el.innerHTML = `<span class="swatch" style="background:#b71c1c"></span>ATR <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'macd') {{
+      el.innerHTML = `MACD <input type="text" value="${{ind.config.fast}}, ${{ind.config.slow}}, ${{ind.config.signal}}" title="Fast, Slow, Signal" style="width:60px"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'bb') {{
+      el.innerHTML = `BB <input type="text" value="${{ind.config.period}}, ${{ind.config.mult}}" title="Period, StdDev" style="width:40px"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'adx') {{
+      el.innerHTML = `<span class="swatch" style="background:#ff4081"></span>ADX <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'aroon') {{
+      // Show two swatches for Up/Down
+      el.innerHTML = `<span class="swatch" style="background:#ff6d00" title="Up"></span><span class="swatch" style="background:#2962ff" title="Down"></span>Aroon <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'aroon_osc') {{
+      el.innerHTML = `<span class="swatch" style="background:#9c27b0"></span>Aroon Osc <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }}
+    container.appendChild(el);
+  }});
+}}
+
+document.getElementById('indicator-select').addEventListener('change', (e) => {{
+  const val = e.target.value;
+  if (val) addIndicator(val);
+  e.target.value = '';
 }});
 
-// ---------- Drawing Engine ----------
-
-const TOOLS = {{
-  trendline: {{ label: 'Trend Line',  nPoints: 2 }},
-  ray:       {{ label: 'Ray',         nPoints: 2 }},
-  extended:  {{ label: 'Extended',    nPoints: 2 }},
-  hline:     {{ label: 'H-Line',      nPoints: 1 }},
-  hray:      {{ label: 'H-Ray',       nPoints: 1 }},
-  vline:     {{ label: 'V-Line',      nPoints: 1 }},
-  cross:     {{ label: 'Cross',       nPoints: 1 }},
-  info:      {{ label: 'Info Line',   nPoints: 2 }},
-  angle:     {{ label: 'Trend Angle', nPoints: 2 }},
-  parallel_channel:  {{ label: 'Parallel Channel',  nPoints: 3 }},
-  regression_trend:  {{ label: 'Regression Trend',  nPoints: 2 }},
-  flat_top_bottom:   {{ label: 'Flat Top/Bottom',   nPoints: 3 }},
-  disjoint_channel:  {{ label: 'Disjoint Channel',  nPoints: 4 }},
-
+// Patch applyInterval and applyCustomInterval to refresh indicators after data load
+const _origApplyInterval = applyInterval;
+applyInterval = function(interval) {{
+  _origApplyInterval(interval);
+  refreshAllIndicators();
 }};
 
-let activeTool    = null;   // null = cursor
-let pendingPoints = [];     // [{{time, price}}] — in-progress placement
-let mouseXY       = {{x: 0, y: 0}}; // cursor in SVG-local px
-let drawings      = [];     // [{{id, type, points, color, lineWidth, paneId}}]
-let activePane    = 'main'; // which pane is being drawn on
+const _origFetchSymbol = fetchSymbol;
+fetchSymbol = async function(symbol) {{
+  await _origFetchSymbol(symbol);
+  refreshAllIndicators();
+}};
 
-const drawingSvg = document.getElementById('drawing-svg');
+// ========== INIT ==========
+// Add volume by default, then fetch data
+addIndicator('volume');
+fetchSymbol('{default_symbol}');
 
-// --- Pane-aware coordinate helpers ---
-function getPaneChart(paneId) {{
-  if (paneId === 'main') return chart;
-  return subPanes[paneId] ? subPanes[paneId].chart : chart;
-}}
-
-function getPaneSeries(paneId) {{
-  if (paneId === 'main') return candleSeries;
-  return subPanes[paneId] ? subPanes[paneId].series : candleSeries;
-}}
-
-function getPaneSvg(paneId) {{
-  if (paneId === 'main') return drawingSvg;
-  return subPanes[paneId] ? subPanes[paneId].svg : drawingSvg;
-}}
-
-function toScreen(time, price, paneId) {{
-  const c = getPaneChart(paneId || 'main');
-  const s = getPaneSeries(paneId || 'main');
-  return {{
-    x: c.timeScale().timeToCoordinate(time),
-    y: s ? s.priceToCoordinate(price) : null,
-  }};
-}}
-
-function fromScreen(x, y, paneId) {{
-  const c = getPaneChart(paneId || 'main');
-  const s = getPaneSeries(paneId || 'main');
-  return {{
-    time:  c.timeScale().coordinateToTime(x),
-    price: s ? s.coordinateToPrice(y) : null,
-  }};
-}}
-
-function getSvgSize(paneId) {{
-  const svg = getPaneSvg(paneId || 'main');
-  const r = svg.getBoundingClientRect();
-  return {{ W: r.width, H: r.height }};
-}}
-
-// Extend ray from (x1,y1) through (x2,y2) to the SVG bounding box edge
-function rayEndpoint(x1, y1, x2, y2, W, H) {{
-  const dx = x2 - x1, dy = y2 - y1;
-  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return {{ x: x2, y: y2 }};
-  let t = Infinity;
-  if (dx > 0) t = Math.min(t, (W - x1) / dx);
-  else if (dx < 0) t = Math.min(t, -x1 / dx);
-  if (dy > 0) t = Math.min(t, (H - y1) / dy);
-  else if (dy < 0) t = Math.min(t, -y1 / dy);
-  return {{ x: x1 + dx * t, y: y1 + dy * t }};
-}}
-
-// --- SVG primitive helpers ---
-const uid = () => Math.random().toString(36).slice(2, 9);
-
-const svgLine = (a, b, col, w, dash = '') =>
-  `<line x1="${{a.x.toFixed(1)}}" y1="${{a.y.toFixed(1)}}"
-         x2="${{b.x.toFixed(1)}}" y2="${{b.y.toFixed(1)}}"
-         stroke="${{col}}" stroke-width="${{w}}" stroke-linecap="round"
-         ${{dash ? `stroke-dasharray="${{dash}}"` : ''}} />`;
-
-const svgDot = (p, col, r = 3) =>
-  `<circle cx="${{p.x.toFixed(1)}}" cy="${{p.y.toFixed(1)}}"
-           r="${{r}}" fill="${{col}}" />`;
-
-const svgTxt = (p, text, col) =>
-  `<text x="${{p.x.toFixed(1)}}" y="${{p.y.toFixed(1)}}"
-         fill="${{col}}" font-size="11"
-         font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">${{text}}</text>`;
-
-const svgPolygon = (points, fillColor) =>
-  `<polygon points="${{points.map(p => p.x.toFixed(1)+','+p.y.toFixed(1)).join(' ')}}"
-            fill="${{fillColor}}" stroke="none" />`;
-
-// --- linearRegression helper ---
-function linearRegression(times, prices) {{
-  const n = times.length;
-  if (n < 2) return {{ slope: 0, intercept: prices[0] || 0, stddev: 0 }};
-  let sx = 0, sy = 0, sxx = 0, sxy = 0;
-  for (let i = 0; i < n; i++) {{
-    sx += times[i]; sy += prices[i];
-    sxx += times[i] * times[i];
-    sxy += times[i] * prices[i];
-  }}
-  const denom = n * sxx - sx * sx;
-  const slope = denom !== 0 ? (n * sxy - sx * sy) / denom : 0;
-  const intercept = (sy - slope * sx) / n;
-  let sse = 0;
-  for (let i = 0; i < n; i++) {{
-    const res = prices[i] - (slope * times[i] + intercept);
-    sse += res * res;
-  }}
-  const stddev = Math.sqrt(sse / n);
-  return {{ slope, intercept, stddev }};
-}}
-
-// --- renderDrawing ---
-function renderDrawing(d, W, H, ghost = false, paneId) {{
-  const stroke = ghost ? d.color + '99' : d.color;
-  const strokeW = d.lineWidth;
-  const dash = ghost ? '6,4' : '';
-  const drawPaneId = paneId || d.paneId || 'main';
-  const pts = d.points.map(p => toScreen(p.time, p.price, drawPaneId));
-
-  let html = '';
-  switch (d.type) {{
-
-    case 'trendline': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      if (pts.length >= 2) {{
-        html += svgLine(pts[0], pts[1], stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'ray': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      if (pts.length >= 2) {{
-        const end = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        html += svgLine(pts[0], end, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'extended': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      if (pts.length >= 2) {{
-        const fwd = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        html += svgLine(bwd, fwd, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'hline': {{
-      if (pts[0].y === null) break;
-      const hy = pts[0].y;
-      html += svgLine({{ x: 0, y: hy }}, {{ x: W, y: hy }}, stroke, strokeW, dash);
-      if (!ghost) {{
-        html += svgTxt({{ x: W - 54, y: hy - 4 }}, d.points[0].price.toFixed(2), stroke);
-      }}
-      break;
-    }}
-
-    case 'hray': {{
-      if (pts[0].x === null || pts[0].y === null) break;
-      html += svgLine(pts[0], {{ x: W, y: pts[0].y }}, stroke, strokeW, dash);
-      html += svgDot(pts[0], stroke);
-      break;
-    }}
-
-    case 'vline': {{
-      if (pts[0].x === null) break;
-      const vx = pts[0].x;
-      html += svgLine({{ x: vx, y: 0 }}, {{ x: vx, y: H }}, stroke, strokeW, dash);
-      break;
-    }}
-
-    case 'cross': {{
-      if (pts[0].x === null || pts[0].y === null) break;
-      const {{ x: cx, y: cy }} = pts[0];
-      html += svgLine({{ x: 0, y: cy }}, {{ x: W, y: cy }}, stroke, strokeW, dash);
-      html += svgLine({{ x: cx, y: 0 }}, {{ x: cx, y: H }}, stroke, strokeW, dash);
-      html += svgDot(pts[0], stroke);
-      break;
-    }}
-
-    case 'info': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      if (pts.length >= 2) {{
-        html += svgLine(pts[0], pts[1], stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-        if (!ghost) {{
-          const delta = d.points[1].price - d.points[0].price;
-          const pct   = (delta / d.points[0].price * 100).toFixed(2);
-          const sign  = delta >= 0 ? '+' : '';
-          const label = `${{sign}}${{delta.toFixed(2)}} (${{sign}}${{pct}}%)`;
-          const mx = (pts[0].x + pts[1].x) / 2;
-          const my = (pts[0].y + pts[1].y) / 2 - 8;
-          html += svgTxt({{ x: mx, y: my }}, label, stroke);
-        }}
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'angle': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      if (pts.length >= 2) {{
-        html += svgLine(pts[0], pts[1], stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-        const dx = pts[1].x - pts[0].x;
-        const dy = pts[1].y - pts[0].y;
-        const deg = (Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1);
-        const mx = (pts[0].x + pts[1].x) / 2 + 6;
-        const my = (pts[0].y + pts[1].y) / 2 - 6;
-        html += svgTxt({{ x: mx, y: my }}, `${{deg}}°`, stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'parallel_channel': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      const fill = ghost ? 'rgba(240,185,11,0.04)' : 'rgba(240,185,11,0.08)';
-      if (pts.length >= 3) {{
-        // Baseline: pts[0] -> pts[1], extended both ways
-        const fwd1 = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd1 = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        // Parallel line through pts[2] with same slope
-        const dx = pts[1].x - pts[0].x;
-        const dy = pts[1].y - pts[0].y;
-        const p2a = {{ x: pts[2].x, y: pts[2].y }};
-        const p2b = {{ x: pts[2].x + dx, y: pts[2].y + dy }};
-        const fwd2 = rayEndpoint(p2a.x, p2a.y, p2b.x, p2b.y, W, H);
-        const bwd2 = rayEndpoint(p2b.x, p2b.y, p2a.x, p2a.y, W, H);
-        html += svgPolygon([bwd1, fwd1, fwd2, bwd2], fill);
-        html += svgLine(bwd1, fwd1, stroke, strokeW, dash);
-        html += svgLine(bwd2, fwd2, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-        html += svgDot(pts[2], stroke);
-      }} else if (pts.length === 2) {{
-        const fwd = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        html += svgLine(bwd, fwd, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'regression_trend': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      const fill = ghost ? 'rgba(240,185,11,0.04)' : 'rgba(240,185,11,0.08)';
-      if (pts.length >= 2) {{
-        // Find candles in the time range
-        const t0 = Math.min(d.points[0].time, d.points[1].time);
-        const t1 = Math.max(d.points[0].time, d.points[1].time);
-        const subset = ALL_CANDLES.filter(c => {{
-          const ct = typeof c.time === 'number' ? c.time : new Date(c.time).getTime() / 1000;
-          const tt0 = typeof t0 === 'number' ? t0 : new Date(t0).getTime() / 1000;
-          const tt1 = typeof t1 === 'number' ? t1 : new Date(t1).getTime() / 1000;
-          return ct >= tt0 && ct <= tt1;
-        }});
-        if (subset.length >= 2) {{
-          // Use screen-x coordinates for regression
-          const screenPts = subset.map(c => {{
-            const sx = chart.timeScale().timeToCoordinate(c.time);
-            const sy = candleSeries.priceToCoordinate(c.close);
-            return {{ x: sx, y: sy }};
-          }}).filter(p => p.x !== null && p.y !== null);
-          if (screenPts.length >= 2) {{
-            const xs = screenPts.map(p => p.x);
-            const ys = screenPts.map(p => p.y);
-            const reg = linearRegression(xs, ys);
-            // Center line endpoints at SVG edges
-            const yAt0 = reg.intercept;
-            const yAtW = reg.slope * W + reg.intercept;
-            const centerA = {{ x: 0, y: yAt0 }};
-            const centerB = {{ x: W, y: yAtW }};
-            // Upper / lower bands
-            const upperA = {{ x: 0, y: yAt0 - reg.stddev }};
-            const upperB = {{ x: W, y: yAtW - reg.stddev }};
-            const lowerA = {{ x: 0, y: yAt0 + reg.stddev }};
-            const lowerB = {{ x: W, y: yAtW + reg.stddev }};
-            html += svgPolygon([upperA, upperB, lowerB, lowerA], fill);
-            html += svgLine(centerA, centerB, stroke, strokeW, dash);
-            html += svgLine(upperA, upperB, stroke, 0.7, '4,3');
-            html += svgLine(lowerA, lowerB, stroke, 0.7, '4,3');
-          }}
-        }}
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'flat_top_bottom': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      const fill = ghost ? 'rgba(240,185,11,0.04)' : 'rgba(240,185,11,0.08)';
-      if (pts.length >= 3) {{
-        // Sloped line: pts[0] -> pts[1], extended both ways
-        const fwd1 = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd1 = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        // Horizontal line at pts[2].price
-        const hy = pts[2].y;
-        const hA = {{ x: 0, y: hy }};
-        const hB = {{ x: W, y: hy }};
-        html += svgPolygon([bwd1, fwd1, hB, hA], fill);
-        html += svgLine(bwd1, fwd1, stroke, strokeW, dash);
-        html += svgLine(hA, hB, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-        html += svgDot(pts[2], stroke);
-      }} else if (pts.length === 2) {{
-        const fwd = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        html += svgLine(bwd, fwd, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-    case 'disjoint_channel': {{
-      if (pts.some(p => p.x === null || p.y === null)) break;
-      const fill = ghost ? 'rgba(240,185,11,0.04)' : 'rgba(240,185,11,0.08)';
-      if (pts.length >= 4) {{
-        // Top line: pts[0] -> pts[1], extended both ways
-        const fwd1 = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd1 = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        // Bottom line: pts[2] -> pts[3], extended both ways
-        const fwd2 = rayEndpoint(pts[2].x, pts[2].y, pts[3].x, pts[3].y, W, H);
-        const bwd2 = rayEndpoint(pts[3].x, pts[3].y, pts[2].x, pts[2].y, W, H);
-        html += svgPolygon([bwd1, fwd1, fwd2, bwd2], fill);
-        html += svgLine(bwd1, fwd1, stroke, strokeW, dash);
-        html += svgLine(bwd2, fwd2, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-        html += svgDot(pts[2], stroke);
-        html += svgDot(pts[3], stroke);
-      }} else if (pts.length === 3) {{
-        const fwd1 = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd1 = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        html += svgLine(bwd1, fwd1, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-        html += svgDot(pts[2], stroke);
-      }} else if (pts.length === 2) {{
-        const fwd = rayEndpoint(pts[0].x, pts[0].y, pts[1].x, pts[1].y, W, H);
-        const bwd = rayEndpoint(pts[1].x, pts[1].y, pts[0].x, pts[0].y, W, H);
-        html += svgLine(bwd, fwd, stroke, strokeW, dash);
-        html += svgDot(pts[0], stroke);
-        html += svgDot(pts[1], stroke);
-      }} else if (pts.length === 1) {{
-        html += svgDot(pts[0], stroke);
-      }}
-      break;
-    }}
-
-
-  }}
-  return html;
-}}
-
-// --- redrawAll ---
-function redrawAll() {{
-  // Render on main pane
-  renderPaneDrawings('main');
-  // Render on each sub-pane
-  Object.keys(subPanes).forEach(id => renderPaneDrawings(id));
-}}
-
-function renderPaneDrawings(paneId) {{
-  const svg = getPaneSvg(paneId);
-  const {{ W, H }} = getSvgSize(paneId);
-  let html = '';
-
-  // Render committed drawings for this pane
-  for (const d of drawings) {{
-    if ((d.paneId || 'main') !== paneId) continue;
-    html += renderDrawing(d, W, H, false, paneId);
-  }}
-
-  // Render ghost (in-progress) drawing on the active pane
-  if (activeTool && pendingPoints.length > 0 && activePane === paneId) {{
-    const ghostPts = [...pendingPoints];
-    const hover = fromScreen(mouseXY.x, mouseXY.y, paneId);
-    if (hover.time !== null && hover.price !== null &&
-        ghostPts.length < TOOLS[activeTool].nPoints) {{
-      ghostPts.push(hover);
-    }}
-    if (ghostPts.length >= 1) {{
-      html += renderDrawing({{
-        type: activeTool,
-        points: ghostPts,
-        color: '#f0b90b',
-        lineWidth: 1,
-        paneId: paneId,
-      }}, W, H, true, paneId);
-    }}
-  }}
-
-  // Hover price label on active pane
-  if (activeTool && activePane === paneId) {{
-    const hover = fromScreen(mouseXY.x, mouseXY.y, paneId);
-    if (hover.price !== null) {{
-      html += svgTxt(
-        {{ x: mouseXY.x + 8, y: mouseXY.y - 6 }},
-        hover.price.toFixed(2),
-        '#f0b90b'
-      );
-    }}
-  }}
-
-  svg.innerHTML = html;
-}}
-
-// --- Tool activation ---
-function setActiveTool(tool) {{
-  activeTool = tool;
-  pendingPoints = [];
-  document.querySelectorAll('#draw-toolbar [data-tool]').forEach(b => {{
-    b.classList.toggle('tool-active', b.dataset.tool === (tool ?? 'cursor'));
-  }});
-  // Toggle drawing-mode on all pane SVGs
-  drawingSvg.classList.toggle('drawing-mode', tool !== null);
-  Object.values(subPanes).forEach(sp => {{
-    sp.svg.classList.toggle('drawing-mode', tool !== null);
-  }});
-  redrawAll();
-}}
-
-document.querySelectorAll('#draw-toolbar [data-tool]').forEach(btn => {{
-  btn.addEventListener('click', () => {{
-    const tool = btn.dataset.tool === 'cursor' ? null : btn.dataset.tool;
-    setActiveTool(tool);
-  }});
-}});
-
-// --- localStorage persistence ---
-const STORAGE_KEY = 'scdraw_{symbol}';
-
-function saveDrawings() {{
-  try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(drawings)); }} catch(e) {{}}
-}}
-
-function loadDrawings() {{
-  try {{
-    const s = localStorage.getItem(STORAGE_KEY);
-    if (s) drawings = JSON.parse(s);
-  }} catch(e) {{}}
-}}
-
-// --- Plot area bounds helper ---
-function getPlotBounds(paneId) {{
-  const c = getPaneChart(paneId);
-  const chartDiv = paneId === 'main' ? document.getElementById('chart') : subPanes[paneId].chartDiv;
-  const plotW = c.timeScale().width();
-  const table = chartDiv.querySelector('table');
-  let timeScaleH = 28;
-  if (table && table.rows.length >= 2) {{
-    timeScaleH = table.rows[table.rows.length - 1].clientHeight;
-  }}
-  const plotH = chartDiv.clientHeight - timeScaleH;
-  return {{ w: plotW, h: plotH }};
-}}
-
-// --- Mouse handlers ---
-function setupPaneSvgEvents(paneId, svg, paneChart, paneSeries) {{
-  svg.addEventListener('mousedown', e => {{
-    if (!activeTool) return;
-    activePane = paneId;
-    const rect = svg.getBoundingClientRect();
-    const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    // Reject clicks on axes
-    const bounds = getPlotBounds(paneId);
-    if (x < 0 || x > bounds.w || y < 0 || y > bounds.h) return;
-    const pt = fromScreen(x, y, paneId);
-    if (pt.time === null || pt.price === null) return;
-
-    pendingPoints.push(pt);
-
-    if (pendingPoints.length >= TOOLS[activeTool].nPoints) {{
-      drawings.push({{
-        id: uid(), type: activeTool,
-        points: [...pendingPoints],
-        color: '#f0b90b', lineWidth: 1,
-        paneId: paneId,
-      }});
-      pendingPoints = [];
-      saveDrawings();
-      redrawAll();
-    }}
-  }});
-
-  svg.addEventListener('mousemove', e => {{
-    activePane = paneId;
-    const rect = svg.getBoundingClientRect();
-    mouseXY = {{ x: e.clientX - rect.left, y: e.clientY - rect.top }};
-    if (activeTool) redrawAll();
-  }});
-}}
-
-// Set up events for main pane
-setupPaneSvgEvents('main', drawingSvg, chart, candleSeries);
-
-// --- Keyboard shortcuts (drawing) ---
-document.addEventListener('keydown', e => {{
-  if (e.code === 'Escape') {{
-    pendingPoints = [];
-    redrawAll();
-  }}
-  if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey)) {{
-    e.preventDefault();
-    drawings.pop();
-    saveDrawings();
-    redrawAll();
-  }}
-}});
-
-// --- Undo / Clear All buttons ---
-document.getElementById('btn-undo').addEventListener('click', () => {{
-  drawings.pop();
-  saveDrawings();
-  redrawAll();
-}});
-
-document.getElementById('btn-clear-all').addEventListener('click', () => {{
-  drawings = [];
-  pendingPoints = [];
-  saveDrawings();
-  redrawAll();
-}});
-
-// --- Sidebar collapse/expand ---
-document.getElementById('sidebar-toggle').addEventListener('click', () => {{
-  const tb = document.getElementById('draw-toolbar');
-  const btn = document.getElementById('sidebar-toggle');
-  tb.classList.toggle('collapsed');
-  btn.innerHTML = tb.classList.contains('collapsed') ? '&#9654;' : '&#9664;';
-}});
-
-// --- Lines group collapse/expand ---
-document.getElementById('lines-header').addEventListener('click', () => {{
-  const grp = document.getElementById('lines-group');
-  const arrow = document.querySelector('#lines-header .arrow');
-  grp.classList.toggle('collapsed-group');
-  arrow.innerHTML = grp.classList.contains('collapsed-group') ? '&#9654;' : '&#9660;';
-}});
-
-// --- Channels group collapse/expand ---
-document.getElementById('channels-header').addEventListener('click', () => {{
-  const grp = document.getElementById('channels-group');
-  const arrow = document.querySelector('#channels-header .arrow');
-  grp.classList.toggle('collapsed-group');
-  arrow.innerHTML = grp.classList.contains('collapsed-group') ? '&#9654;' : '&#9660;';
-}});
-
-
-// --- Sync SVG bounds to match plot area (exclude axes) ---
-function syncSvgBounds() {{
-  syncPaneSvgBounds('main', chart, document.getElementById('chart'), drawingSvg);
-  Object.keys(subPanes).forEach(id => {{
-    const sp = subPanes[id];
-    syncPaneSvgBounds(id, sp.chart, sp.chartDiv, sp.svg);
-  }});
-}}
-
-function syncPaneSvgBounds(paneId, paneChart, chartDiv, svg) {{
-  try {{
-    const plotW = paneChart.timeScale().width();
-    // Find time scale height by measuring the chart's internal table
-    const table = chartDiv.querySelector('table');
-    let timeScaleH = 28; // default fallback
-    if (table && table.rows.length >= 2) {{
-      timeScaleH = table.rows[table.rows.length - 1].clientHeight;
-    }}
-    const plotH = chartDiv.clientHeight - timeScaleH;
-    svg.setAttribute('width', Math.max(0, plotW));
-    svg.setAttribute('height', Math.max(0, plotH));
-    svg.style.width = Math.max(0, plotW) + 'px';
-    svg.style.height = Math.max(0, plotH) + 'px';
-  }} catch(e) {{}}
-}}
-
-// --- Auto-redraw on pan/zoom/resize ---
-chart.timeScale().subscribeVisibleLogicalRangeChange(() => {{ syncSvgBounds(); redrawAll(); }});
-const chartsContainerEl = document.getElementById('charts-container');
-new ResizeObserver(() => {{ syncSvgBounds(); redrawAll(); }}).observe(chartsContainerEl);
-
-// --- Init ---
-loadDrawings();
-syncSvgBounds();
-redrawAll();
 </script>
 </body>
 </html>"""
-
-
-def main():
-    params = get_user_input()
-    if not params:
-        sys.exit(0)
-
-    symbol = params["symbol"]
-    interval = params["interval"]
-    df = fetch_data(symbol, params["start"], params["end"], interval)
-
-    if df.empty:
-        messagebox.showerror("No Data", f"No data returned for {symbol}. Check the ticker and date range.")
-        sys.exit(1)
-
-    is_intraday = interval in ("1h", "4h")
-
-    # Prepare data for Lightweight Charts
-    candle_data = []
-    volume_data = []
-    for ts, row in df.iterrows():
-        if is_intraday:
-            t = int(ts.timestamp())
-        else:
-            t = ts.strftime("%Y-%m-%d")
-        o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
-        v = float(row["Volume"])
-        candle_data.append({"time": t, "open": o, "high": h, "low": l, "close": c})
-        color = "#26a69a80" if c >= o else "#ef535080"
-        volume_data.append({"time": t, "value": v, "color": color})
-
-    html = build_chart_html(symbol, candle_data, volume_data, is_intraday)
-
-    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as f:
-        f.write(html)
-        webbrowser.open(f"file:///{f.name}")
-
-
-if __name__ == "__main__":
-    main()
