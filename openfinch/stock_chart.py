@@ -212,6 +212,8 @@ def build_chart_html(default_symbol: str) -> str:
     <option value="adx">ADX (Average Directional Index)</option>
     <option value="aroon">Aroon</option>
     <option value="aroon_osc">Aroon Oscillator</option>
+    <option value="supertrend">SuperTrend</option>
+    <option value="vwma">VWMA (Volume Weighted Moving Average)</option>
   </select>
   <div id="active-indicators"></div>
 </div>
@@ -690,6 +692,33 @@ function computeMACD(candles, fastPeriod, slowPeriod, signalPeriod) {{
   return {{ macd: macdLine, signal: signalLine, histogram }};
 }}
 
+// ========== VWMA CALCULATION ==========
+function computeVWMA(candles, volumes, period) {{
+  // VWMA = Sum(Close * Volume) / Sum(Volume)
+  if (candles.length === 0 || volumes.length === 0) return [];
+  if (candles.length !== volumes.length) {{
+    return []; // Should align or fail silently
+  }}
+  const result = [];
+  
+  for (let i = 0; i < candles.length; i++) {{
+    if (i < period - 1) continue;
+    
+    let sumPriceVolume = 0;
+    let sumVolume = 0;
+    for (let j = i - period + 1; j <= i; j++) {{
+      sumPriceVolume += candles[j].close * volumes[j].value;
+      sumVolume += volumes[j].value;
+    }}
+    if (sumVolume === 0) {{
+      result.push({{ time: candles[i].time, value: 0 }}); // Avoid division by zero
+    }} else {{
+      result.push({{ time: candles[i].time, value: sumPriceVolume / sumVolume }});
+    }}
+  }}
+  return result;
+}}
+
 // ========== BOLLINGER BANDS CALCULATION ==========
 function computeBB(candles, period, stdDevMult) {{
   if (candles.length < period) return null;
@@ -879,9 +908,7 @@ function computeAroon(candles, period) {{
     // Standard is: Look at last N candles (including current).
     // e.g. 14 period. Look at i, i-1, ... i-14? No, window size is period + 1 usually?
     // TradingView says "measures how many periods have passed since price has recorded an n-period high".
-    // Usually standard is lookback window of size N+1 including current? Or size N?
-    // Let's assume size N+1 (0 to period).
-    // Actually standard def: look over last Period candles.
+    // If High is today, days since is 0.
     
     for (let j = 0; j <= period; j++) {{
       const idx = i - j;
@@ -924,6 +951,155 @@ function computeAroonOsc(candles, period) {{
   return result;
 }}
 
+// ========== SUPERTREND CALCULATION ==========
+function computeSuperTrend(candles, period, mult) {{
+  if (candles.length < period + 1) return null;
+  const atrValues = computeATR(candles, period);
+  if (atrValues.length === 0) return null;
+
+  const atrMap = new Map(atrValues.map(a => [a.time, a.value]));
+
+  const line = [];     // continuous line: {{ time, value, trend }}
+  const signals = [];  // trend change markers: {{ time, value, direction }}
+
+  let upperBand = 0;
+  let lowerBand = 0;
+  let prevUpperBand = 0;
+  let prevLowerBand = 0;
+  let trend = 1;
+  let prevTrend = 1;
+  let first = true;
+
+  for (let i = 0; i < candles.length; i++) {{
+    const c = candles[i];
+    const atr = atrMap.get(c.time);
+    if (atr === undefined) continue;
+
+    const hl2 = (c.high + c.low) / 2;
+    const basicUpper = hl2 + (mult * atr);
+    const basicLower = hl2 - (mult * atr);
+
+    if (first) {{
+      upperBand = basicUpper;
+      lowerBand = basicLower;
+      trend = c.close > hl2 ? 1 : -1;
+      prevTrend = trend;
+      first = false;
+    }} else {{
+      lowerBand = (basicLower > prevLowerBand || candles[i - 1].close < prevLowerBand)
+        ? basicLower : prevLowerBand;
+      upperBand = (basicUpper < prevUpperBand || candles[i - 1].close > prevUpperBand)
+        ? basicUpper : prevUpperBand;
+
+      prevTrend = trend;
+      if (trend === 1 && c.close < lowerBand) {{
+        trend = -1;
+      }} else if (trend === -1 && c.close > upperBand) {{
+        trend = 1;
+      }}
+    }}
+
+    const value = trend === 1 ? lowerBand : upperBand;
+    line.push({{ time: c.time, value, trend }});
+
+    if (prevTrend !== trend && !first) {{
+      signals.push({{
+        time: c.time,
+        value: value,
+        direction: trend  // +1 = buy, -1 = sell
+      }});
+    }}
+
+    prevUpperBand = upperBand;
+    prevLowerBand = lowerBand;
+  }}
+
+  return {{ line, signals }};
+}}
+
+// ========== SUPERTREND RENDER HELPER ==========
+function renderSuperTrend(ind, data) {{
+  // 1. Remove previous segment series and area series
+  if (ind.segmentSeries) {{
+    ind.segmentSeries.forEach(s => chart.removeSeries(s));
+  }}
+  if (ind.areaSeries) {{
+    ind.areaSeries.forEach(s => chart.removeSeries(s));
+  }}
+  ind.segmentSeries = [];
+  ind.areaSeries = [];
+
+  if (!data || !data.line || data.line.length === 0) {{
+    candleSeries.setMarkers([]);
+    return;
+  }}
+
+  // 2. Split line into contiguous same-trend segments with overlap points
+  const segments = [];
+  let currentSeg = [data.line[0]];
+  let currentTrend = data.line[0].trend;
+
+  for (let i = 1; i < data.line.length; i++) {{
+    const pt = data.line[i];
+    if (pt.trend !== currentTrend) {{
+      // Add this point as overlap (end of prev segment)
+      currentSeg.push(pt);
+      segments.push({{ trend: currentTrend, points: currentSeg }});
+      // Start new segment from this overlap point
+      currentSeg = [pt];
+      currentTrend = pt.trend;
+    }} else {{
+      currentSeg.push(pt);
+    }}
+  }}
+  if (currentSeg.length > 0) {{
+    segments.push({{ trend: currentTrend, points: currentSeg }});
+  }}
+
+  // 3. Create line series + area series for each segment
+  const upColor = '#00E676';
+  const downColor = '#FF5252';
+  const upFill = 'rgba(0, 230, 118, 0.15)';
+  const downFill = 'rgba(255, 82, 82, 0.15)';
+
+  // Build a map of time -> close price for area fill
+  const closeMap = new Map(ALL_CANDLES.map(c => [c.time, c.close]));
+
+  segments.forEach(seg => {{
+    const color = seg.trend === 1 ? upColor : downColor;
+    const fillColor = seg.trend === 1 ? upFill : downFill;
+
+    // Line series for this segment
+    const ls = chart.addLineSeries({{
+      color: color,
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceScaleId: 'right',
+    }});
+    ls.setData(seg.points.map(p => ({{ time: p.time, value: p.value }})));
+    ind.segmentSeries.push(ls);
+  }});
+
+  // 4. Set markers on candleSeries for trend reversals
+  const markers = data.signals.map(sig => ({{
+    time: sig.time,
+    position: sig.direction === 1 ? 'belowBar' : 'aboveBar',
+    color: sig.direction === 1 ? upColor : downColor,
+    shape: sig.direction === 1 ? 'arrowUp' : 'arrowDown',
+    text: sig.direction === 1 ? 'Buy' : 'Sell',
+    size: 2,
+  }}));
+  // Sort markers by time
+  markers.sort((a, b) => {{
+    if (a.time < b.time) return -1;
+    if (a.time > b.time) return 1;
+    return 0;
+  }});
+  candleSeries.setMarkers(markers);
+}}
+
 // ========== INDICATOR MANAGEMENT ==========
 const activeIndicators = {{}};
 let indicatorIdCounter = 0;
@@ -957,14 +1133,31 @@ function addIndicator(type) {{
       lineWidth: 2,
       crosshairMarkerRadius: 3,
       priceScaleId: 'right',
-      lastValueVisible: false,
-      priceLineVisible: false,
+      lastValueVisible: true,
+      priceLineVisible: true,
     }});
     const computeFn = type === 'ema' ? computeEMA : computeSMA;
     const data = computeFn(ALL_CANDLES, period);
     series.setData(data);
     activeIndicators[id] = {{ type, id, series, period, color }};
     renderActiveIndicators();
+  }} else if (type === 'vwma') {{
+     if (activeIndicators['vwma']) return;
+     const color = '#9C27B0'; // Purple for VWMA
+     const period = 20;
+     const series = chart.addLineSeries({{
+       color: color,
+       lineWidth: 2,
+       crosshairMarkerRadius: 3,
+       priceScaleId: 'right',
+       lastValueVisible: true,
+       priceLineVisible: true,
+       title: 'VWMA'
+     }});
+     const data = computeVWMA(ALL_CANDLES, ALL_VOLUME, period);
+     series.setData(data);
+     activeIndicators['vwma'] = {{ type: 'vwma', id: 'vwma', series, period, color }};
+     renderActiveIndicators();
   }} else if (type === 'atr') {{
     if (activeIndicators['atr']) return; // single ATR pane for now implementation-wise
     const pane = createSubPane('atr', 'ATR', 150);
@@ -1023,13 +1216,13 @@ function addIndicator(type) {{
   }} else if (type === 'bb') {{
     const color = '#2962ff'; // Default BB color
     const middleSeries = chart.addLineSeries({{
-      color: '#ff6d00', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false
+      color: '#ff6d00', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: true, lastValueVisible: true
     }});
     const upperSeries = chart.addLineSeries({{
-      color: color, lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false
+      color: color, lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: true, lastValueVisible: true
     }});
     const lowerSeries = chart.addLineSeries({{
-      color: color, lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false
+      color: color, lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: true, lastValueVisible: true
     }});
     
     const config = {{ period: 20, mult: 2 }};
@@ -1046,6 +1239,17 @@ function addIndicator(type) {{
       middleSeries, upperSeries, lowerSeries,
       config 
     }};
+    renderActiveIndicators();
+  }} else if (type === 'supertrend') {{
+    if (activeIndicators['supertrend']) return;
+    const config = {{ period: 10, mult: 3 }};
+    const ind = {{ 
+      type: 'supertrend', id: 'supertrend', config, 
+      segmentSeries: [], areaSeries: [] 
+    }};
+    const data = computeSuperTrend(ALL_CANDLES, config.period, config.mult);
+    renderSuperTrend(ind, data);
+    activeIndicators['supertrend'] = ind;
     renderActiveIndicators();
   }} else if (type === 'adx') {{
     if (activeIndicators['adx']) return;
@@ -1123,7 +1327,7 @@ function removeIndicator(id) {{
     volumeSeries = null;
     destroySubPane('volume');
     document.getElementById('vol-legend').style.display = 'none';
-  }} else if (ind.type === 'sma' || ind.type === 'ema') {{
+  }} else if (ind.type === 'sma' || ind.type === 'ema' || ind.type === 'vwma') {{
     chart.removeSeries(ind.series);
   }} else if (ind.type === 'atr') {{
     destroySubPane('atr');
@@ -1133,6 +1337,10 @@ function removeIndicator(id) {{
     chart.removeSeries(ind.middleSeries);
     chart.removeSeries(ind.upperSeries);
     chart.removeSeries(ind.lowerSeries);
+  }} else if (ind.type === 'supertrend') {{
+    if (ind.segmentSeries) ind.segmentSeries.forEach(s => chart.removeSeries(s));
+    if (ind.areaSeries) ind.areaSeries.forEach(s => chart.removeSeries(s));
+    candleSeries.setMarkers([]);
   }} else if (ind.type === 'adx') {{
     destroySubPane('adx');
   }} else if (ind.type === 'aroon') {{
@@ -1173,6 +1381,14 @@ function updateIndicatorPeriod(id, newVal) {{
       }}
     }}
     return;
+  }} else if (ind.type === 'supertrend') {{
+    const parts = String(newVal).split(',').map(p => parseFloat(p.trim())).filter(n => !isNaN(n));
+    if (parts.length >= 2) {{
+      ind.config = {{ period: Math.round(parts[0]), mult: parts[1] }};
+      const data = computeSuperTrend(ALL_CANDLES, ind.config.period, ind.config.mult);
+      renderSuperTrend(ind, data);
+    }}
+    return;
   }}
 
   // Single value indicators
@@ -1183,6 +1399,10 @@ function updateIndicatorPeriod(id, newVal) {{
     ind.period = newPeriod;
     const computeFn = ind.type === 'ema' ? computeEMA : computeSMA;
     const data = computeFn(ALL_CANDLES, newPeriod);
+    ind.series.setData(data);
+  }} else if (ind.type === 'vwma') {{
+    ind.period = newPeriod;
+    const data = computeVWMA(ALL_CANDLES, ALL_VOLUME, newPeriod);
     ind.series.setData(data);
   }} else if (ind.type === 'atr') {{
     ind.period = newPeriod;
@@ -1213,6 +1433,9 @@ function refreshAllIndicators() {{
       const computeFn = ind.type === 'ema' ? computeEMA : computeSMA;
       const data = computeFn(ALL_CANDLES, ind.period);
       ind.series.setData(data);
+    }} else if (ind.type === 'vwma') {{
+      const data = computeVWMA(ALL_CANDLES, ALL_VOLUME, ind.period);
+      ind.series.setData(data);
     }} else if (ind.type === 'atr') {{
       const data = computeATR(ALL_CANDLES, ind.period);
       ind.series.setData(data);
@@ -1242,6 +1465,9 @@ function refreshAllIndicators() {{
     }} else if (ind.type === 'aroon_osc') {{
       const data = computeAroonOsc(ALL_CANDLES, ind.period);
       if (data) ind.series.setData(data);
+    }} else if (ind.type === 'supertrend') {{
+      const data = computeSuperTrend(ALL_CANDLES, ind.config.period, ind.config.mult);
+      renderSuperTrend(ind, data);
     }}
   }});
 }}
@@ -1257,6 +1483,15 @@ function renderActiveIndicators() {{
       el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator('volume'));
     }} else if (ind.type === 'sma' || ind.type === 'ema') {{
       const label = ind.type.toUpperCase();
+      el.innerHTML = `<span class="swatch" style="background:${{ind.color}}"></span>${{label}} <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'vwma') {{
+      const label = 'VWMA';
       el.innerHTML = `<span class="swatch" style="background:${{ind.color}}"></span>${{label}} <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
       const input = el.querySelector('input');
       input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
@@ -1307,6 +1542,14 @@ function renderActiveIndicators() {{
       el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
     }} else if (ind.type === 'aroon_osc') {{
       el.innerHTML = `<span class="swatch" style="background:#9c27b0"></span>Aroon Osc <input type="text" value="${{ind.period}}" title="Period"><button class="remove-ind" title="Remove">&times;</button>`;
+      const input = el.querySelector('input');
+      input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
+      input.addEventListener('keydown', (e) => {{
+        if (e.key === 'Enter') {{ e.preventDefault(); input.blur(); }}
+      }});
+      el.querySelector('.remove-ind').addEventListener('click', () => removeIndicator(ind.id));
+    }} else if (ind.type === 'supertrend') {{
+      el.innerHTML = `<span class="swatch" style="background:#00E676" title="Up"></span><span class="swatch" style="background:#FF5252" title="Down"></span>ST <input type="text" value="${{ind.config.period}}, ${{ind.config.mult}}" title="Period, Multiplier" style="width:40px"><button class="remove-ind" title="Remove">&times;</button>`;
       const input = el.querySelector('input');
       input.addEventListener('change', () => updateIndicatorPeriod(ind.id, input.value));
       input.addEventListener('keydown', (e) => {{

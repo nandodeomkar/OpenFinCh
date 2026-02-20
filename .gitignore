@@ -26,3 +26,10 @@ test.ipynb
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
+
+# Server logs
+server.log
+server.err
