@@ -15,7 +15,7 @@ def build_chart_html(default_symbol: str) -> str:
         f'<option value="{b["key"]}">{b["label"]}</option>'
         for b in buttons
     )
-    default_interval = buttons[0]["key"] if buttons else "1h"
+    default_interval = "1d"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -162,12 +162,51 @@ def build_chart_html(default_symbol: str) -> str:
     box-shadow: 0 4px 16px rgba(0,0,0,0.4);
   }}
   #toast.show {{ display: block; }}
+
+  /* Clock */
+  #clock-wrapper {{
+    position: fixed; bottom: 8px; right: 12px; z-index: 100;
+    font-size: 12px; color: #888; font-family: monospace;
+  }}
+  #clock {{
+    cursor: pointer; user-select: none;
+  }}
+  #clock:hover {{ color: #f0b90b; }}
+  #tz-picker {{
+    display: none; position: absolute; bottom: 22px; right: 0;
+    background: #1a1a24; border: 1px solid #2a2a36; border-radius: 6px;
+    padding: 6px; width: 240px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }}
+  #tz-picker.open {{ display: block; }}
+  #tz-search {{
+    width: 100%; box-sizing: border-box; background: #12121a; border: 1px solid #2a2a36;
+    color: #e0e0e0; padding: 5px 8px; border-radius: 4px; font-size: 12px;
+    font-family: monospace; outline: none; margin-bottom: 4px;
+  }}
+  #tz-search:focus {{ border-color: #f0b90b; }}
+  #tz-list {{
+    max-height: 200px; overflow-y: auto; margin: 0; padding: 0; list-style: none;
+  }}
+  #tz-list li {{
+    padding: 4px 8px; cursor: pointer; border-radius: 3px; font-size: 11px;
+    color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }}
+  #tz-list li:hover {{ background: #2a2a36; color: #f0b90b; }}
+  #tz-list::-webkit-scrollbar {{ width: 4px; }}
+  #tz-list::-webkit-scrollbar-thumb {{ background: #2a2a36; border-radius: 2px; }}
 </style>
 </head>
 <body>
 
 <div id="loading"><div class="spinner"></div></div>
 <div id="toast"></div>
+<div id="clock-wrapper">
+  <div id="clock"></div>
+  <div id="tz-picker">
+    <input id="tz-search" type="text" placeholder="Search timezone..." spellcheck="false" autocomplete="off">
+    <ul id="tz-list"></ul>
+  </div>
+</div>
 
 <div id="header">
   <input id="ticker-input" type="text" value="{default_symbol}" spellcheck="false" autocomplete="off">
@@ -1580,10 +1619,227 @@ fetchSymbol = async function(symbol) {{
   refreshAllIndicators();
 }};
 
+// ========== CLOCK ==========
+(function() {{
+  const clockEl = document.getElementById('clock');
+  const picker = document.getElementById('tz-picker');
+  const searchInput = document.getElementById('tz-search');
+  const listEl = document.getElementById('tz-list');
+
+  let selectedTZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+  // Compute UTC offset string for a timezone
+  function getUTCOffset(tz) {{
+    try {{
+      const now = new Date();
+      // Get local time in target tz
+      const str = now.toLocaleString('en-US', {{ timeZone: tz }});
+      const there = new Date(str);
+      const utcStr = now.toLocaleString('en-US', {{ timeZone: 'UTC' }});
+      const utc = new Date(utcStr);
+      const diffMin = Math.round((there - utc) / 60000);
+      const sign = diffMin >= 0 ? '+' : '-';
+      const abs = Math.abs(diffMin);
+      const h = Math.floor(abs / 60);
+      const m = abs % 60;
+      return 'UTC' + sign + String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    }} catch(e) {{
+      return 'UTC+00:00';
+    }}
+  }}
+
+  // Full IANA timezone list
+  const allTZ = [
+    'Pacific/Midway','Pacific/Niue','Pacific/Pago_Pago','Pacific/Honolulu','Pacific/Rarotonga',
+    'Pacific/Tahiti','America/Adak','Pacific/Marquesas','America/Anchorage','America/Juneau',
+    'America/Nome','America/Sitka','America/Yakutat','Pacific/Gambier','America/Los_Angeles',
+    'America/Tijuana','America/Vancouver','Pacific/Pitcairn','America/Boise','America/Denver',
+    'America/Edmonton','America/Phoenix','America/Chihuahua','America/Mazatlan',
+    'America/Chicago','America/Guatemala','America/Managua','America/Mexico_City',
+    'America/Regina','America/Winnipeg','America/Bogota','America/Cancun','America/Detroit',
+    'America/Havana','America/Indiana/Indianapolis','America/Lima','America/New_York',
+    'America/Panama','America/Toronto','America/Caracas','America/Asuncion',
+    'America/Barbados','America/Halifax','America/Manaus','America/Santiago',
+    'America/St_Johns','America/Argentina/Buenos_Aires','America/Montevideo',
+    'America/Sao_Paulo','Atlantic/South_Georgia','Atlantic/Azores','Atlantic/Cape_Verde',
+    'Africa/Abidjan','Africa/Accra','Africa/Casablanca','America/Danmarkshavn',
+    'Atlantic/Reykjavik','Europe/Dublin','Europe/Lisbon','Europe/London','UTC',
+    'Africa/Algiers','Africa/Lagos','Africa/Tunis','Europe/Amsterdam','Europe/Berlin',
+    'Europe/Brussels','Europe/Budapest','Europe/Madrid','Europe/Oslo','Europe/Paris',
+    'Europe/Prague','Europe/Rome','Europe/Stockholm','Europe/Vienna','Europe/Warsaw',
+    'Europe/Zurich','Africa/Cairo','Africa/Johannesburg','Africa/Khartoum',
+    'Asia/Beirut','Asia/Jerusalem','Europe/Athens','Europe/Bucharest','Europe/Helsinki',
+    'Europe/Istanbul','Europe/Kiev','Europe/Moscow','Africa/Addis_Ababa','Africa/Nairobi',
+    'Asia/Baghdad','Asia/Kuwait','Asia/Qatar','Asia/Riyadh','Europe/Minsk',
+    'Asia/Tehran','Asia/Baku','Asia/Dubai','Asia/Muscat','Asia/Tbilisi','Asia/Yerevan',
+    'Asia/Kabul','Asia/Karachi','Asia/Tashkent','Asia/Yekaterinburg','Asia/Colombo',
+    'Asia/Kolkata','Asia/Kathmandu','Asia/Almaty','Asia/Dhaka','Asia/Omsk',
+    'Asia/Rangoon','Asia/Bangkok','Asia/Ho_Chi_Minh','Asia/Jakarta','Asia/Krasnoyarsk',
+    'Asia/Novosibirsk','Asia/Hong_Kong','Asia/Irkutsk','Asia/Kuala_Lumpur','Asia/Makassar',
+    'Asia/Manila','Asia/Shanghai','Asia/Singapore','Asia/Taipei','Australia/Perth',
+    'Asia/Pyongyang','Asia/Seoul','Asia/Tokyo','Asia/Yakutsk','Australia/Adelaide',
+    'Australia/Darwin','Australia/Brisbane','Australia/Melbourne','Australia/Sydney',
+    'Asia/Vladivostok','Pacific/Guam','Pacific/Port_Moresby','Asia/Magadan',
+    'Pacific/Noumea','Pacific/Norfolk','Asia/Kamchatka','Pacific/Auckland',
+    'Pacific/Fiji','Pacific/Chatham','Pacific/Apia','Pacific/Tongatapu','Pacific/Kiritimati'
+  ];
+
+  // Pre-compute entries with offsets
+  const tzEntries = allTZ.map(tz => {{
+    const offset = getUTCOffset(tz);
+    const label = offset + '  ' + tz.replace(/_/g, ' ');
+    return {{ tz, offset, label, search: (tz + ' ' + offset).toLowerCase() }};
+  }});
+
+  // Sort by offset
+  tzEntries.sort((a, b) => {{
+    const parseOff = (s) => {{
+      const m = s.match(/UTC([+-])(\d{{2}}):(\d{{2}})/);
+      if (!m) return 0;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2]) * 60 + parseInt(m[3]));
+    }};
+    return parseOff(a.offset) - parseOff(b.offset) || a.tz.localeCompare(b.tz);
+  }});
+
+  function tick() {{
+    const now = new Date();
+    const time = now.toLocaleTimeString('en-GB', {{
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: selectedTZ
+    }});
+    const offset = getUTCOffset(selectedTZ);
+    const short = selectedTZ.split('/').pop().replace(/_/g, ' ');
+    clockEl.textContent = offset + '  ' + short + '  ' + time;
+  }}
+  tick();
+  setInterval(tick, 1000);
+
+  let filteredEntries = tzEntries;
+  const BATCH = 40;
+  let rendered = 0;
+
+  function renderBatch() {{
+    const end = Math.min(rendered + BATCH, filteredEntries.length);
+    for (let i = rendered; i < end; i++) {{
+      const entry = filteredEntries[i];
+      const li = document.createElement('li');
+      li.textContent = entry.label;
+      li.addEventListener('click', () => {{
+        selectedTZ = entry.tz;
+        tick();
+        closePicker();
+      }});
+      listEl.appendChild(li);
+    }}
+    rendered = end;
+  }}
+
+  function renderList(filter) {{
+    const q = (filter || '').toLowerCase();
+    filteredEntries = q ? tzEntries.filter(e => e.search.includes(q)) : tzEntries;
+    listEl.innerHTML = '';
+    rendered = 0;
+    renderBatch();
+  }}
+
+  listEl.addEventListener('scroll', () => {{
+    if (rendered < filteredEntries.length && listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 20) {{
+      renderBatch();
+    }}
+  }});
+
+  function openPicker() {{
+    picker.classList.add('open');
+    searchInput.value = '';
+    renderList('');
+    setTimeout(() => searchInput.focus(), 50);
+  }}
+
+  function closePicker() {{
+    picker.classList.remove('open');
+  }}
+
+  clockEl.addEventListener('click', (e) => {{
+    e.stopPropagation();
+    if (picker.classList.contains('open')) closePicker();
+    else openPicker();
+  }});
+
+  picker.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', closePicker);
+
+  searchInput.addEventListener('input', () => renderList(searchInput.value));
+}})();
+
+// ========== AUTO-DETECT LOCAL INDEX ==========
+function detectLocalIndex() {{
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  const region = tz.split('/')[0];
+  const city = tz.split('/').pop();
+
+  // Timezone → [primary index, secondary index] (pick first; secondary is fallback context)
+  const tzMap = {{
+    // India
+    'Asia/Kolkata':      '^NSEI',
+    'Asia/Calcutta':     '^NSEI',
+    // US
+    'America/New_York':  '^GSPC',
+    'America/Chicago':   '^GSPC',
+    'America/Denver':    '^GSPC',
+    'America/Los_Angeles': '^GSPC',
+    'America/Phoenix':   '^GSPC',
+    'America/Anchorage': '^GSPC',
+    'Pacific/Honolulu':  '^GSPC',
+    // UK
+    'Europe/London':     '^FTSE',
+    // Europe
+    'Europe/Berlin':     '^STOXX50E',
+    'Europe/Paris':      '^STOXX50E',
+    'Europe/Madrid':     '^STOXX50E',
+    'Europe/Rome':       '^STOXX50E',
+    'Europe/Amsterdam':  '^STOXX50E',
+    'Europe/Zurich':     '^STOXX50E',
+    'Europe/Brussels':   '^STOXX50E',
+    'Europe/Vienna':     '^STOXX50E',
+    // Japan
+    'Asia/Tokyo':        '^N225',
+    // China
+    'Asia/Shanghai':     '000001.SS',
+    'Asia/Hong_Kong':    '^HSI',
+    // South Korea
+    'Asia/Seoul':        '^KS11',
+    // Australia
+    'Australia/Sydney':  '^AXJO',
+    'Australia/Melbourne': '^AXJO',
+    // Canada
+    'America/Toronto':   '^GSPTSE',
+    // Brazil
+    'America/Sao_Paulo': '^BVSP',
+    // Singapore
+    'Asia/Singapore':    '^STI',
+    // Taiwan
+    'Asia/Taipei':       '^TWII',
+  }};
+
+  if (tzMap[tz]) return tzMap[tz];
+
+  // Fallback by region
+  const regionMap = {{
+    'America': '^GSPC',
+    'Europe':  '^STOXX50E',
+    'Asia':    '^NSEI',
+    'Australia': '^AXJO',
+    'Pacific': '^GSPC',
+    'Africa':  '^GSPC',
+  }};
+
+  return regionMap[region] || '^GSPC';
+}}
+
 // ========== INIT ==========
-// Add volume by default, then fetch data
-addIndicator('volume');
-fetchSymbol('{default_symbol}');
+const detectedSymbol = detectLocalIndex();
+document.getElementById('ticker-input').value = detectedSymbol;
+fetchSymbol(detectedSymbol);
 
 </script>
 </body>

@@ -3,6 +3,7 @@
 To add a new interval, simply add an entry to the INTERVALS dict below.
 """
 
+import concurrent.futures
 import pandas as pd
 import yfinance as yf
 
@@ -181,12 +182,23 @@ def prepare_chart_data(df: pd.DataFrame, intraday: bool) -> dict:
 def fetch_all_intervals(symbol: str) -> dict:
     """Fetch data for all configured intervals and return chart-ready datasets."""
     datasets = {}
-    for key, cfg in INTERVALS.items():
-        df = fetch_interval(symbol, key)
-        if df.empty:
-            datasets[key] = {"candles": [], "volume": [], "intraday": cfg["intraday"]}
-        else:
-            datasets[key] = prepare_chart_data(df, cfg["intraday"])
+
+    def _fetch_safe(k, c):
+        try:
+            d = fetch_interval(symbol, k)
+            if d.empty:
+                return k, {"candles": [], "volume": [], "intraday": c["intraday"]}
+            return k, prepare_chart_data(d, c["intraday"])
+        except Exception as e:
+            print(f"Error fetching {k}: {e}")
+            return k, {"candles": [], "volume": [], "intraday": c["intraday"]}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_fetch_safe, k, v): k for k, v in INTERVALS.items()}
+        for future in concurrent.futures.as_completed(futures):
+            key, data = future.result()
+            datasets[key] = data
+            
     return datasets
 
 
