@@ -4,6 +4,7 @@ To add a new interval, simply add an entry to the INTERVALS dict below.
 """
 
 import concurrent.futures
+import time
 import pandas as pd
 import yfinance as yf
 from . import db
@@ -152,7 +153,7 @@ def fetch_interval(symbol: str, interval_key: str) -> pd.DataFrame:
     """Fetch OHLCV data for a single interval from cache, fetching new data if needed."""
     cfg = INTERVALS[interval_key]
     yf_interval = cfg["yf_interval"]
-    
+
     # 1. Check if we should fetch from yfinance
     if db.should_fetch(symbol, yf_interval):
         ticker = yf.Ticker(symbol)
@@ -180,40 +181,100 @@ def fetch_interval(symbol: str, interval_key: str) -> pd.DataFrame:
     return df
 
 
+def _resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Resample OHLCV DataFrame to a coarser interval."""
+    return df.resample(rule).agg({
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+        "Volume": "sum",
+    }).dropna()
+
+
 def prepare_chart_data(df: pd.DataFrame, intraday: bool) -> dict:
     """Convert a DataFrame to chart-ready candle and volume lists."""
-    candles = []
-    volume = []
-    for ts, row in df.iterrows():
-        t = int(ts.timestamp()) if intraday else ts.strftime("%Y-%m-%d")
-        o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
-        v = float(row["Volume"])
-        candles.append({"time": t, "open": o, "high": h, "low": l, "close": c})
-        color = "#26a69a80" if c >= o else "#ef535080"
-        volume.append({"time": t, "value": v, "color": color})
+    if intraday:
+        times = (df.index.astype("int64") // 10**9).tolist()
+    else:
+        times = df.index.strftime("%Y-%m-%d").tolist()
+
+    opens = df["Open"].tolist()
+    highs = df["High"].tolist()
+    lows = df["Low"].tolist()
+    closes = df["Close"].tolist()
+    volumes = df["Volume"].tolist()
+
+    candles = [
+        {"time": t, "open": o, "high": h, "low": l, "close": c}
+        for t, o, h, l, c in zip(times, opens, highs, lows, closes)
+    ]
+    volume = [
+        {"time": t, "value": v, "color": "#26a69a80" if c >= o else "#ef535080"}
+        for t, o, c, v in zip(times, opens, closes, volumes)
+    ]
     return {"candles": candles, "volume": volume, "intraday": intraday}
 
 
 def fetch_all_intervals(symbol: str) -> dict:
     """Fetch data for all configured intervals and return chart-ready datasets."""
+    t_start = time.perf_counter()
     datasets = {}
 
-    def _fetch_safe(k, c):
-        try:
-            d = fetch_interval(symbol, k)
-            if d.empty:
-                return k, {"candles": [], "volume": [], "intraday": c["intraday"]}
-            return k, prepare_chart_data(d, c["intraday"])
-        except Exception as e:
-            print(f"Error fetching {k}: {e}")
-            return k, {"candles": [], "volume": [], "intraday": c["intraday"]}
+    # Group interval keys by their yf_interval to deduplicate cache reads
+    yf_groups: dict[str, list[tuple[str, dict]]] = {}
+    for key, cfg in INTERVALS.items():
+        yf_int = cfg["yf_interval"]
+        yf_groups.setdefault(yf_int, []).append((key, cfg))
 
+    def _fetch_group(yf_interval: str, members: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+        """Fetch once from cache/yfinance, then produce chart data for all intervals sharing this yf_interval."""
+        # Use the first member's period (the longest) for fetching
+        # Find the member with the broadest period for yfinance fetch
+        period = members[0][1]["period"]
+        for _, cfg in members:
+            if cfg["period"] == "max":
+                period = "max"
+                break
+
+        # Fetch from yfinance if needed (only once per yf_interval)
+        if db.should_fetch(symbol, yf_interval):
+            ticker = yf.Ticker(symbol)
+            new_df = ticker.history(period=period, interval=yf_interval)
+            if not new_df.empty:
+                db.save_data(symbol, yf_interval, new_df)
+
+        # Single cache read for this yf_interval
+        cached_df = db.get_cached_data(symbol, yf_interval)
+
+        results = []
+        for key, cfg in members:
+            try:
+                if cached_df.empty:
+                    results.append((key, {"candles": [], "volume": [], "intraday": cfg["intraday"]}))
+                    continue
+
+                df = cached_df
+                if cfg.get("resample_rule"):
+                    df = _resample(df, cfg["resample_rule"])
+
+                results.append((key, prepare_chart_data(df, cfg["intraday"])))
+            except Exception as e:
+                print(f"Error processing {key}: {e}")
+                results.append((key, {"candles": [], "volume": [], "intraday": cfg["intraday"]}))
+        return results
+
+    # Run each yf_interval group in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_fetch_safe, k, v): k for k, v in INTERVALS.items()}
+        futures = {
+            executor.submit(_fetch_group, yf_int, members): yf_int
+            for yf_int, members in yf_groups.items()
+        }
         for future in concurrent.futures.as_completed(futures):
-            key, data = future.result()
-            datasets[key] = data
-            
+            for key, data in future.result():
+                datasets[key] = data
+
+    print(f"fetch_all_intervals({symbol}): {time.perf_counter()-t_start:.3f}s")
     return datasets
 
 

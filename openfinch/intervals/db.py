@@ -42,38 +42,31 @@ def init_db():
     conn.close()
 
 def should_fetch(symbol: str, interval: str) -> bool:
-    """
-    Determine if we should fetch new data based on the interval and last_fetched time.
-    For simplicity:
-    - Intraday intervals (< 1d): fetch if older than 15 minutes.
-    - Daily+ intervals (>= 1d): fetch if older than 12 hours.
+    """Return True if data should be fetched from yfinance.
+
+    Intraday intervals re-fetch after 15 minutes to accumulate history.
+    Daily+ intervals are cached permanently.
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT last_fetched FROM metadata WHERE symbol=? AND interval=?", (symbol, interval))
     row = cursor.fetchone()
     conn.close()
-    
+
     if not row:
         return True
-    
+
+    # Daily and above: permanent cache
+    is_intraday = interval.endswith("m") or interval.endswith("h")
+    if not is_intraday:
+        return False
+
+    # Intraday: re-fetch after 15 minutes to accumulate new candles
     last_fetched = datetime.datetime.fromisoformat(row[0])
     now = datetime.datetime.now(datetime.timezone.utc)
-    
-    # Handle timezone differences if last_fetched is naive
     if last_fetched.tzinfo is None:
         last_fetched = last_fetched.replace(tzinfo=datetime.timezone.utc)
-    
-    diff = now - last_fetched
-    
-    is_intraday = interval.endswith("m") or interval.endswith("h")
-    
-    if is_intraday:
-        # Fetch if older than 15 minutes
-        return diff.total_seconds() > 15 * 60
-    else:
-        # Fetch if older than 12 hours
-        return diff.total_seconds() > 12 * 3600
+    return (now - last_fetched).total_seconds() > 15 * 60
 
 def update_metadata(symbol: str, interval: str):
     """Update the last_fetched timestamp for a symbol and interval."""
@@ -142,28 +135,22 @@ def get_cached_data(symbol: str, interval: str) -> pd.DataFrame:
     Returns a DataFrame with a DatetimeIndex resembling yfinance output.
     """
     conn = sqlite3.connect(DB_PATH)
-    
-    query = """
-    SELECT timestamp, open as Open, high as High, low as Low, close as Close, volume as Volume
-    FROM price_data
-    WHERE symbol=? AND interval=?
-    ORDER BY timestamp ASC
-    """
-    
-    df = pd.read_sql_query(query, conn, params=(symbol, interval))
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT timestamp, open, high, low, close, volume "
+        "FROM price_data WHERE symbol=? AND interval=? ORDER BY timestamp ASC",
+        (symbol, interval),
+    )
+    rows = cursor.fetchall()
     conn.close()
-    
-    if df.empty:
-        return df
 
-    # Convert timestamp back to DatetimeIndex
-    # yfinance uses localized datetime index, usually 'America/New_York' or 'UTC'. Let's standardise to UTC.
-    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
-        
-    # Convert volume to float to match original logic if it isn't
-    df['Volume'] = df['Volume'].astype(float)
-    
-    df.set_index('timestamp', inplace=True)
-    df.index.name = 'Date' # standard yfinance name
-    
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["Volume"] = df["Volume"].astype(float)
+    df.set_index("timestamp", inplace=True)
+    df.index.name = "Date"
+
     return df

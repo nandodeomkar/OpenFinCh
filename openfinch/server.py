@@ -20,7 +20,10 @@ from pydantic import BaseModel
 import yfinance as yf
 
 from openfinch.edgar import get_holders
-from openfinch.intervals import fetch_all_intervals, fetch_custom_interval
+from openfinch.intervals import (
+    fetch_all_intervals, fetch_custom_interval,
+    fetch_interval, prepare_chart_data, INTERVALS,
+)
 import openfinch.stock_chart as _stock_chart_mod
 
 DEFAULT_SYMBOL = "AAPL"
@@ -30,6 +33,10 @@ app = FastAPI(title="OpenFinCh API")
 
 class SymbolRequest(BaseModel):
     symbol: str
+
+class IntervalRequest(BaseModel):
+    symbol: str
+    interval: str
 
 class CustomIntervalRequest(BaseModel):
     symbol: str
@@ -65,6 +72,27 @@ def api_data(req: SymbolRequest):
         if not has_data:
             raise HTTPException(status_code=404, detail=f"No data found for '{symbol}'")
         return {"symbol": symbol, "datasets": datasets}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/interval")
+def api_interval(req: IntervalRequest):
+    symbol = req.symbol.strip().upper()
+    interval = req.interval.strip()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Missing symbol")
+    if interval not in INTERVALS:
+        raise HTTPException(status_code=400, detail=f"Unknown interval '{interval}'")
+
+    try:
+        cfg = INTERVALS[interval]
+        df = fetch_interval(symbol, interval)
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"No data for '{symbol}' at {interval}")
+        dataset = prepare_chart_data(df, cfg["intraday"])
+        return {"symbol": symbol, "interval": interval, "dataset": dataset}
     except HTTPException:
         raise
     except Exception as e:

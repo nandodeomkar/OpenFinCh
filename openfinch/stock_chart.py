@@ -1103,36 +1103,33 @@ function showToast(msg) {{
   setTimeout(() => toastEl.classList.remove('show'), 3000);
 }}
 
+async function fetchInterval(symbol, interval) {{
+  const resp = await fetch('/api/interval', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{ symbol, interval }}),
+  }});
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.detail || 'Failed to fetch data');
+  return data.dataset;
+}}
+
 async function fetchSymbol(symbol) {{
   showLoading();
   try {{
-    const resp = await fetch('/api/data', {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ symbol }}),
-    }});
-    const data = await resp.json();
-    if (!resp.ok) {{
-      showToast(data.error || 'Failed to fetch data');
-      hideLoading();
-      return;
-    }}
-    currentSymbol = data.symbol;
-    DATASETS = data.datasets;
+    const ds = await fetchInterval(symbol, currentInterval);
+    currentSymbol = symbol.toUpperCase();
+    DATASETS = {{}};
+    DATASETS[currentInterval] = ds;
     document.title = currentSymbol + ' — OpenFinCh';
-    applyInterval(currentInterval);
+    renderInterval(ds);
   }} catch (e) {{
-    showToast('Network error: ' + e.message);
+    showToast(e.message || 'Network error');
   }}
   hideLoading();
 }}
 
-function applyInterval(interval) {{
-  if (!DATASETS || !DATASETS[interval]) return;
-  if (typeof clearAllDrawings === 'function') clearAllDrawings();
-  deactivateDrawingTool && deactivateDrawingTool();
-  currentInterval = interval;
-  const ds = DATASETS[interval];
+function renderInterval(ds) {{
   ALL_CANDLES = ds.candles;
   ALL_VOLUME  = ds.volume;
   ALL_LINE    = ALL_CANDLES.map(c => ({{ time: c.time, value: c.close }}));
@@ -1146,7 +1143,6 @@ function applyInterval(interval) {{
   areaSeries.setData(ALL_LINE);
   if (volumeSeries) {{
     volumeSeries.setData(ALL_VOLUME);
-    // Also update sub-pane time scale visibility
     const sp = subPanes['volume'];
     if (sp && sp.chart) {{
       sp.chart.applyOptions({{
@@ -1162,8 +1158,29 @@ function applyInterval(interval) {{
       if (range) sp.chart.timeScale().setVisibleLogicalRange(range);
     }} catch(e) {{}}
   }});
+}}
 
+async function applyInterval(interval) {{
+  if (typeof clearAllDrawings === 'function') clearAllDrawings();
+  deactivateDrawingTool && deactivateDrawingTool();
+  currentInterval = interval;
   document.getElementById('interval-select').value = interval;
+
+  if (DATASETS && DATASETS[interval]) {{
+    renderInterval(DATASETS[interval]);
+    return;
+  }}
+
+  showLoading();
+  try {{
+    const ds = await fetchInterval(currentSymbol, interval);
+    if (!DATASETS) DATASETS = {{}};
+    DATASETS[interval] = ds;
+    renderInterval(ds);
+  }} catch (e) {{
+    showToast(e.message || 'Failed to load interval');
+  }}
+  hideLoading();
 }}
 
 // ========== TICKER INPUT + AUTOCOMPLETE ==========
