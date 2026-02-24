@@ -6,6 +6,10 @@ To add a new interval, simply add an entry to the INTERVALS dict below.
 import concurrent.futures
 import pandas as pd
 import yfinance as yf
+from . import db
+
+# Initialize the cache database entirely
+db.init_db()
 
 
 # Each interval entry defines how to fetch and process data from yfinance.
@@ -145,15 +149,26 @@ INTERVALS = {
 
 
 def fetch_interval(symbol: str, interval_key: str) -> pd.DataFrame:
-    """Fetch OHLCV data for a single interval."""
+    """Fetch OHLCV data for a single interval from cache, fetching new data if needed."""
     cfg = INTERVALS[interval_key]
-    ticker = yf.Ticker(symbol)
-    df = ticker.history(period=cfg["period"], interval=cfg["yf_interval"])
+    yf_interval = cfg["yf_interval"]
+    
+    # 1. Check if we should fetch from yfinance
+    if db.should_fetch(symbol, yf_interval):
+        ticker = yf.Ticker(symbol)
+        new_df = ticker.history(period=cfg["period"], interval=yf_interval)
+        if not new_df.empty:
+            db.save_data(symbol, yf_interval, new_df)
 
-    if df.empty:
-        return df
+    # 2. Always load the full historical dataset from cache
+    cached_df = db.get_cached_data(symbol, yf_interval)
 
-    if cfg["resample_rule"]:
+    if cached_df.empty:
+        return cached_df
+
+    df = cached_df
+
+    if cfg.get("resample_rule"):
         df = df.resample(cfg["resample_rule"]).agg({
             "Open": "first",
             "High": "max",
@@ -253,8 +268,13 @@ def fetch_custom_interval(symbol: str, value: int, unit: str) -> dict:
             yf_interval = "1m"
             period = "7d"
 
-    ticker = yf.Ticker(symbol)
-    df = ticker.history(period=period, interval=yf_interval)
+    if db.should_fetch(symbol, yf_interval):
+        ticker = yf.Ticker(symbol)
+        new_df = ticker.history(period=period, interval=yf_interval)
+        if not new_df.empty:
+            db.save_data(symbol, yf_interval, new_df)
+            
+    df = db.get_cached_data(symbol, yf_interval)
 
     if df.empty:
         return {"candles": [], "volume": [], "intraday": intraday}
