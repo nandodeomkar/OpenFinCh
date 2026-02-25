@@ -236,8 +236,6 @@ def api_profile(req: SymbolRequest):
         info = ticker.get_info() or {}
 
         summary = info.get("longBusinessSummary", "")
-        if summary and len(summary) > 500:
-            summary = summary[:500] + "..."
 
         cal = {}
         try:
@@ -410,6 +408,8 @@ def api_financials(req: FinancialsRequest):
         ticker = yf.Ticker(symbol)
         result = {"freq": freq}
 
+        yf_freq = "yearly" if freq == "annual" else freq
+
         def df_to_dict(df):
             if df is None or df.empty:
                 return None
@@ -432,19 +432,19 @@ def api_financials(req: FinancialsRequest):
             return out
 
         try:
-            inc = ticker.get_financials(freq=freq)
+            inc = ticker.get_financials(freq=yf_freq)
             result["income"] = df_to_dict(inc)
         except Exception:
             result["income"] = None
 
         try:
-            bs = ticker.get_balance_sheet(freq=freq)
+            bs = ticker.get_balance_sheet(freq=yf_freq)
             result["balance"] = df_to_dict(bs)
         except Exception:
             result["balance"] = None
 
         try:
-            cf = ticker.get_cash_flow(freq=freq)
+            cf = ticker.get_cash_flow(freq=yf_freq)
             result["cashflow"] = df_to_dict(cf)
         except Exception:
             result["cashflow"] = None
